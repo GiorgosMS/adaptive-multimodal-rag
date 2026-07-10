@@ -45,11 +45,30 @@ class Encoder(Protocol):
         ...
 
 
+_NORM_TOL = 1e-3
+
+
+def _assert_l2_normalised(vectors: np.ndarray, source: str) -> None:
+    """Encoders must return unit vectors; dot product is only cosine if they do."""
+    norms = np.linalg.norm(vectors, axis=1)
+    if not np.allclose(norms, 1.0, atol=_NORM_TOL):
+        bad = float(norms[np.argmax(np.abs(norms - 1.0))])
+        raise ValueError(
+            f"{source} returned vectors that are not L2-normalised "
+            f"(worst norm {bad:.6f}, tolerance {_NORM_TOL}). "
+            f"DenseRetriever treats the dot product as cosine similarity, "
+            f"which is only valid for unit vectors."
+        )
+
+
 class BGEM3Encoder:
     """BAAI/bge-m3 dense head. 1024-dim, L2-normalised.
 
-    Repo ships a duplicate ONNX export; `sentence-transformers` pulls only the
-    PyTorch weights (~2.29 GB of the 4.57 GB repo).
+    No onnx/ directory in the snapshot: `sentence-transformers` pulls both
+    `model.safetensors` (2.2 GB) and the legacy `pytorch_model.bin` (2.2 GB)
+    -- the same weights in two formats, ~4.3 GB total on disk. If disk ever
+    gets tight, `snapshot_download(..., ignore_patterns=["pytorch_model.bin"])`
+    would halve that.
     """
     def __init__(self, device: str = "cuda") -> None:
         from sentence_transformers import SentenceTransformer
@@ -74,12 +93,15 @@ class DenseRetriever:
         if not docs:
             raise ValueError("cannot build dense index over zero documents")
         matrix = encoder.encode([d.text for d in docs])
+        _assert_l2_normalised(matrix, source="Encoder.encode(documents)")
         return cls([d.doc_id for d in docs], matrix, encoder)
 
     def retrieve(self, query: str, k: int) -> list[Hit]:
-        q = self._encoder.encode([query])[0]
+        q_matrix = self._encoder.encode([query])
+        _assert_l2_normalised(q_matrix, source="Encoder.encode(query)")
+        q = q_matrix[0]
         scores = self._matrix @ q      # cosine, inputs are normalised
-        order = np.argsort(-scores)[:k]
+        order = np.argsort(-scores, kind="stable")[:k]
         return [
             Hit(doc_id=self._doc_ids[i], score=float(scores[i]),
                 granularity="passage", modality="text")
