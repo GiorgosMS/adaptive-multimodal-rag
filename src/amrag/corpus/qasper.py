@@ -56,6 +56,10 @@ class QasperCorpus(Corpus):
         ds = load_dataset("allenai/qasper", split=split, revision="refs/convert/parquet")
         return cls([dict(row) for row in ds])
 
+    def raw_papers(self) -> list[dict]:
+        """The untouched HuggingFace rows, for vendor/qasper_eval.py to consume."""
+        return self._papers
+
     def documents(self) -> Iterator[Document]:
         for paper in self._papers:
             for i, para in enumerate(_paragraphs_from_paper(paper)):

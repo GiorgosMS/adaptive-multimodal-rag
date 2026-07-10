@@ -1,45 +1,55 @@
-"""Adapter onto the vendored official QASPER evaluator.
+"""Thin shape-adapter onto the vendored official QASPER evaluator.
 
-BOTH metrics come from vendor/qasper_eval.py, downloaded unmodified from
-allenai/qasper-led-baseline:
+We do NOT score anything ourselves. `vendor/qasper_eval.py` is byte-identical to
+allenai/qasper-led-baseline, and its `get_answers_and_evidence()` + `evaluate()`
+define the metrics the paper reports. We only translate HuggingFace's columnar
+`qas` layout into the row-wise layout upstream expects.
 
-  token_f1_score(pred, ref)          -> Answer-F1   (SQuAD-normalised token F1)
-  paragraph_f1_score(pred, gold)     -> Evidence-F1 (set F1 over paragraph strings)
-
-We only reshape our data into their expected form. Reimplementing either would
-silently break comparability with the paper -- and `paragraph_f1_score` carries
-a special case (empty gold + empty prediction == 1.0, i.e. correct abstention on
-an unanswerable question) that a naive set-F1 gets wrong.
+Every scoring subtlety -- max-over-annotators, the "Unanswerable" gold string,
+the extractive/abstractive/boolean priority, the empty-gold-empty-prediction
+special case -- lives upstream and must stay there.
 """
-from vendor.qasper_eval import paragraph_f1_score, token_f1_score
+from vendor.qasper_eval import evaluate, get_answers_and_evidence
 
 
-def score_answers(
-    predictions: dict[str, str],
-    gold: dict,
-    retrieved: dict[str, list[str]] | None = None,
-) -> dict[str, float]:
-    """`gold` maps qid -> {"answers": [str, ...], "evidence": [str, ...]}.
+def _rowwise(paper: dict) -> dict:
+    """HuggingFace gives `qas` as a dict-of-lists; upstream wants a list-of-dicts.
 
-    A qid present in `gold` but absent from `predictions` scores 0 -- an
-    unanswered question is a failure, not an exemption.
-
-    `token_f1_score` returns int 0 on no overlap; float() keeps the return type
-    homogeneous so `to_markdown`'s `:.4f` formatting never sees an int.
+    One more wrinkle than the outer qas/questions flip: `qas["answers"][i]` is
+    itself columnar -- `{"answer": [annotator_dict, ...], "annotation_id": [...],
+    "worker_id": [...]}` -- where each element of the "answer" list is the raw
+    per-annotator answer info (unanswerable/extractive_spans/free_form_answer/
+    yes_no/evidence), *not* wrapped in its own "answer" key. Upstream iterates
+    `qa_info["answers"]` expecting each element to be a wrapper with an
+    "answer" key (`annotation_info["answer"]`), so we re-wrap each raw
+    per-annotator dict here. Confirmed against a real cached QASPER paper --
+    a fixture alone would not have surfaced this second level of columnarity.
     """
-    if not gold:
-        return {"answer_f1": 0.0, "evidence_f1": 0.0}
-
-    answer_scores, evidence_scores = [], []
-    for qid, g in gold.items():
-        pred = predictions.get(qid, "")
-        answer_scores.append(float(max(token_f1_score(pred, ref) for ref in g["answers"])))
-        if retrieved is not None:
-            evidence_scores.append(
-                float(paragraph_f1_score(retrieved.get(qid, []), g["evidence"]))
-            )
-
+    qas = paper["qas"]
     return {
-        "answer_f1": sum(answer_scores) / len(answer_scores),
-        "evidence_f1": (sum(evidence_scores) / len(evidence_scores)) if evidence_scores else 0.0,
+        "qas": [
+            {"question_id": qid, "question": q,
+             "answers": [{"answer": annotator} for annotator in ann["answer"]]}
+            for qid, q, ann in zip(qas["question_id"], qas["question"], qas["answers"])
+        ]
     }
+
+
+def build_gold(papers: list[dict], text_evidence_only: bool = True) -> dict:
+    """qid -> [{answer, evidence, type}, ...], one entry per annotator.
+
+    `text_evidence_only=True` drops "FLOAT SELECTED" (figure/table) evidence,
+    which a text-only retriever cannot reach. That is upstream's own flag, and
+    it is what makes the Recall@k ceiling honest rather than punitive.
+    """
+    return get_answers_and_evidence({p["id"]: _rowwise(p) for p in papers}, text_evidence_only)
+
+
+def score_answers(predictions: dict[str, dict], gold: dict) -> dict:
+    """`predictions` maps qid -> {"answer": str, "evidence": [str, ...]}.
+
+    Returns upstream's dict: "Answer F1", "Answer F1 by type", "Evidence F1",
+    "Missing predictions". A qid in `gold` but absent from `predictions` scores
+    0 on both metrics -- upstream counts it, it is not an exemption.
+    """
+    return evaluate(gold, predictions)

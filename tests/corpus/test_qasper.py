@@ -169,6 +169,12 @@ def test_none_section_name_does_not_crash_and_evidence_still_drops_as_other():
     assert c.dropped_other == 1
 
 
+def test_raw_papers_returns_same_list_object_as_constructed_with():
+    papers = [RAW_PAPER]
+    c = QasperCorpus.from_raw(papers)
+    assert c.raw_papers() is papers
+
+
 def test_qrels_counters_are_idempotent_across_calls():
     """Counters must describe the corpus, not the call history.
 
