@@ -40,6 +40,27 @@ def test_ndcg_matches_pytrec_eval():
     scored = ev.evaluate({"q1": {d: float(len(RUN) - i) for i, d in enumerate(RUN)}})
     assert ndcg_at_k(RUN, QRELS, 3) == pytest.approx(scored["q1"]["ndcg_cut_3"], abs=1e-6)
 
+def test_ndcg_idcg_truncation_branch():
+    """Regression: nDCG IDCG must be truncated to k, not computed over all relevant docs.
+
+    This case has |relevant| > k, forcing the IDCG[:k] truncation branch that
+    test_ndcg_matches_pytrec_eval cannot reach (|relevant| = 2 <= k = 3).
+    Without this truncation, a buggy implementation would compute IDCG over all
+    4 relevant docs and return 0.390380 instead of the correct 0.613147.
+    """
+    import pytrec_eval
+    qrels = {"d1": 1, "d2": 1, "d3": 1, "d4": 1}  # 4 relevant
+    run = ["d1", "d5", "d6", "d7"]                 # only d1 retrieved, at rank 1
+    k = 2
+
+    # Correct value with IDCG truncated to k=2
+    assert ndcg_at_k(run, qrels, k) == pytest.approx(0.613147, abs=1e-6)
+
+    # Cross-check against pytrec_eval reference
+    ev = pytrec_eval.RelevanceEvaluator({"q1": qrels}, {"ndcg_cut_2"})
+    scored = ev.evaluate({"q1": {d: float(len(run) - i) for i, d in enumerate(run)}})
+    assert ndcg_at_k(run, qrels, k) == pytest.approx(scored["q1"]["ndcg_cut_2"], abs=1e-6)
+
 def test_all_qrels_are_binary():
     """Guards the assumption the pytrec_eval cross-check depends on."""
     assert set(QRELS.values()) <= {0, 1}
