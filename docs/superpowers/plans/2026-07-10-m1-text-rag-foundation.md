@@ -1537,7 +1537,7 @@ If the URL 404s, locate the current path in `allenai/qasper-led-baseline` and re
 ```python
 # tests/eval/test_answer.py
 import pytest
-from amrag.eval.answer import score_answers
+from amrag.eval.answer import build_gold, score_answers
 
 GOLD = {
     "q1": {"answers": ["backpropagation"], "evidence": ["Nets are trained with backprop."]},
@@ -1631,53 +1631,68 @@ Expected: FAIL — `TypeError: score_answers() got an unexpected keyword argumen
 
 Now replace `src/amrag/eval/answer.py` with:
 
+> ⚠️ **Do not write a scoring loop. Call upstream's `evaluate()`.**
+> Reading `vendor/qasper_eval.py` reveals that a hand-written adapter diverges from the official
+> protocol in four ways, each of which silently breaks comparability with the published numbers:
+>
+> | | Official `evaluate()` | A naive adapter |
+> |---|---|---|
+> | Gold shape | **per-annotator list** of `{answer, evidence, type}` | one flattened union |
+> | Evidence-F1 | `max(paragraph_f1_score(pred, ref["evidence"]) for ref in refs)` | one call on the union — **systematically under-reports** whenever annotators disagree |
+> | Unanswerable gold | the literal string `"Unanswerable"` | `""` — so correct abstention scores Answer-F1 **0**, not 1 |
+> | Answer priority | `extractive_spans` (`", ".join`) → `free_form_answer` → `yes_no` (`"Yes"`/`"No"`) | some other order |
+>
+> Upstream also has a `text_evidence_only` flag that filters `"FLOAT SELECTED"` evidence — the
+> official handling of the 459 figure/table annotations measured in Task 4.
+>
+> Our job is **shape translation only**: HuggingFace serves `qas` columnar (dict-of-lists);
+> upstream expects it row-wise (list-of-dicts).
+
 ```python
 # src/amrag/eval/answer.py
-"""Adapter onto the vendored official QASPER evaluator.
+"""Thin shape-adapter onto the vendored official QASPER evaluator.
 
-BOTH metrics come from vendor/qasper_eval.py, downloaded unmodified from
-allenai/qasper-led-baseline:
+We do NOT score anything ourselves. `vendor/qasper_eval.py` is byte-identical to
+allenai/qasper-led-baseline, and its `get_answers_and_evidence()` + `evaluate()`
+define the metrics the paper reports. We only translate HuggingFace's columnar
+`qas` layout into the row-wise layout upstream expects.
 
-  token_f1_score(pred, ref)          -> Answer-F1   (SQuAD-normalised token F1)
-  paragraph_f1_score(pred, gold)     -> Evidence-F1 (set F1 over paragraph strings)
-
-We only reshape our data into their expected form. Reimplementing either would
-silently break comparability with the paper -- and `paragraph_f1_score` carries
-a special case (empty gold + empty prediction == 1.0, i.e. correct abstention on
-an unanswerable question) that a naive set-F1 gets wrong.
+Every scoring subtlety -- max-over-annotators, the "Unanswerable" gold string,
+the extractive/abstractive/boolean priority, the empty-gold-empty-prediction
+special case -- lives upstream and must stay there.
 """
-from vendor.qasper_eval import paragraph_f1_score, token_f1_score
+from vendor.qasper_eval import evaluate, get_answers_and_evidence
 
 
-def score_answers(
-    predictions: dict[str, str],
-    gold: dict,
-    retrieved: dict[str, list[str]] | None = None,
-) -> dict[str, float]:
-    """`gold` maps qid -> {"answers": [str, ...], "evidence": [str, ...]}.
-
-    A qid present in `gold` but absent from `predictions` scores 0 -- an
-    unanswered question is a failure, not an exemption.
-
-    `token_f1_score` returns int 0 on no overlap; float() keeps the return type
-    homogeneous so `to_markdown`'s `:.4f` formatting never sees an int.
-    """
-    if not gold:
-        return {"answer_f1": 0.0, "evidence_f1": 0.0}
-
-    answer_scores, evidence_scores = [], []
-    for qid, g in gold.items():
-        pred = predictions.get(qid, "")
-        answer_scores.append(float(max(token_f1_score(pred, ref) for ref in g["answers"])))
-        if retrieved is not None:
-            evidence_scores.append(
-                float(paragraph_f1_score(retrieved.get(qid, []), g["evidence"]))
-            )
-
+def _rowwise(paper: dict) -> dict:
+    """HuggingFace gives `qas` as a dict-of-lists; upstream wants a list-of-dicts."""
+    qas = paper["qas"]
     return {
-        "answer_f1": sum(answer_scores) / len(answer_scores),
-        "evidence_f1": (sum(evidence_scores) / len(evidence_scores)) if evidence_scores else 0.0,
+        "qas": [
+            {"question_id": qid, "question": q, "answers": ann["answer"]}
+            for qid, q, ann in zip(qas["question_id"], qas["question"], qas["answers"])
+        ]
     }
+
+
+def build_gold(papers: list[dict], text_evidence_only: bool = True) -> dict:
+    """qid -> [{answer, evidence, type}, ...], one entry per annotator.
+
+    `text_evidence_only=True` drops "FLOAT SELECTED" (figure/table) evidence,
+    which a text-only retriever cannot reach. That is upstream's own flag, and
+    it is what makes the Recall@k ceiling honest rather than punitive.
+    """
+    return get_answers_and_evidence({p["id"]: _rowwise(p) for p in papers}, text_evidence_only)
+
+
+def score_answers(predictions: dict[str, dict], gold: dict) -> dict:
+    """`predictions` maps qid -> {"answer": str, "evidence": [str, ...]}.
+
+    Returns upstream's dict: "Answer F1", "Answer F1 by type", "Evidence F1",
+    "Missing predictions". A qid in `gold` but absent from `predictions` scores
+    0 on both metrics -- upstream counts it, it is not an exemption.
+    """
+    return evaluate(gold, predictions)
 ```
 
 Re-run: `python -m pytest tests/eval/test_answer.py -v`
@@ -1980,35 +1995,25 @@ def test_unanswerable_question_yields_empty_answer_string():
 Run: `python -m pytest tests/corpus/test_qasper.py::test_gold_answers_shape_matches_score_answers_contract -v`
 Expected: FAIL — `AttributeError: 'QasperCorpus' object has no attribute 'gold_answers'`
 
-- [ ] **Step 3: Implement (append the method to `QasperCorpus`)**
+- [ ] **Step 3: Expose the raw papers; let upstream build the gold**
+
+Do **not** hand-build a gold dict. `eval/answer.py::build_gold` (Task 12) delegates to upstream's
+`get_answers_and_evidence()`, which already knows the per-annotator shape, the `"Unanswerable"`
+sentinel, the extractive/abstractive/boolean priority, and the `text_evidence_only` filter.
+
+`QasperCorpus` only needs to hand over its raw rows:
 
 ```python
-    def gold_answers(self) -> dict[str, dict]:
-        """qid -> {"answers": [str, ...], "evidence": [str, ...]}.
+    def raw_papers(self) -> list[dict]:
+        """The untouched HuggingFace rows, for vendor/qasper_eval.py to consume.
 
-        QASPER answers are a union of free-form text, extractive spans, and
-        yes/no. We flatten each annotator's answer to one string; an
-        unanswerable question's reference is the empty string, so a system that
-        answers anything at all is penalised.
+        Deliberately not reshaped: `build_gold` owns the translation, and the
+        scoring protocol lives upstream where it cannot drift from the paper.
         """
-        out: dict[str, dict] = {}
-        for paper in self._papers:
-            qas = paper["qas"]
-            for qid, ann in zip(qas["question_id"], qas["answers"]):
-                answers, evidence = [], []
-                for a in ann["answer"]:
-                    if a["unanswerable"]:
-                        answers.append("")
-                    elif a["yes_no"] is not None:
-                        answers.append("yes" if a["yes_no"] else "no")
-                    elif a["free_form_answer"]:
-                        answers.append(a["free_form_answer"])
-                    else:
-                        answers.append(" ".join(a["extractive_spans"]))
-                    evidence.extend(a["evidence"])
-                out[qid] = {"answers": answers, "evidence": evidence}
-        return out
+        return self._papers
 ```
+
+Test: `QasperCorpus.from_raw([RAW_PAPER]).raw_papers() == [RAW_PAPER]` (identity, not a copy).
 
 - [ ] **Step 4: Run the tests to verify they pass**
 
@@ -2028,7 +2033,7 @@ import argparse, pathlib
 
 from amrag.corpus.qasper import QasperCorpus
 from amrag.eval.ablate import to_markdown
-from amrag.eval.answer import score_answers
+from amrag.eval.answer import build_gold, score_answers
 from amrag.generate.llm import DeepSeekLLM
 from amrag.generate.prompt import INSUFFICIENT_EVIDENCE, build_grounded_prompt
 from amrag.index.text import BGEM3Encoder, BM25Retriever, DenseRetriever
@@ -2043,7 +2048,7 @@ a = ap.parse_args()
 corpus = QasperCorpus.load("test")
 docs = list(corpus.documents())
 texts = {d.doc_id: d.text for d in docs}
-gold = corpus.gold_answers()
+gold = build_gold(corpus.raw_papers(), text_evidence_only=True)
 queries = list(corpus.queries())
 if a.limit:
     queries = queries[: a.limit]
@@ -2053,28 +2058,33 @@ dense = DenseRetriever.build(docs, BGEM3Encoder())
 sparse = BM25Retriever.build(docs)
 reranker, llm = BGEReranker(), DeepSeekLLM()
 
-predictions, retrieved, abstentions = {}, {}, 0
+predictions, abstentions = {}, 0
 for q in queries:
     hits = rrf_fuse([dense.retrieve(q.text, 100), sparse.retrieve(q.text, 100)], k=100)
     hits = rerank(q.text, hits[:50], texts, reranker, k=a.k)
-    retrieved[q.qid] = [texts[h.doc_id] for h in hits]
     answer = llm.complete(build_grounded_prompt(q.text, hits, texts)).strip()
     if answer == INSUFFICIENT_EVIDENCE:
         abstentions += 1
-        answer = ""          # scored as empty, exactly like an unanswerable gold
-    predictions[q.qid] = answer
+        # Upstream's gold answer for an unanswerable question is the literal
+        # string "Unanswerable". Emitting "" here would score Answer-F1 = 0 for
+        # a CORRECT abstention -- token_f1_score has no empty-empty special case
+        # (unlike paragraph_f1_score). Say what the benchmark expects.
+        answer = "Unanswerable"
+    predictions[q.qid] = {"answer": answer, "evidence": [texts[h.doc_id] for h in hits]}
 
-s = score_answers(predictions, gold, retrieved=retrieved)
+s = score_answers(predictions, gold)
 rows = [{
     "config": "+rerank",
-    "evidence_f1": s["evidence_f1"],      # retrieval first (deck slide 39)
-    "answer_f1": s["answer_f1"],
+    "evidence_f1": s["Evidence F1"],      # retrieval first (deck slide 39)
+    "answer_f1": s["Answer F1"],
+    "missing_predictions": s["Missing predictions"],
     "abstention_rate": abstentions / len(queries),
 }]
 md = to_markdown(rows)
 pathlib.Path("results").mkdir(exist_ok=True)
 pathlib.Path("results/m1_qasper_answers.md").write_text(md)
 print(md)
+print("\nAnswer F1 by type:", s["Answer F1 by type"])   # extractive/abstractive/boolean/none
 ```
 
 - [ ] **Step 6: Smoke-run on 20 questions, then the full split**
