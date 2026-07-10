@@ -1513,6 +1513,23 @@ curl -fsSL -o vendor/qasper_eval.py \
 head -30 vendor/qasper_eval.py    # confirm it is the scorer, not an HTML 404 page
 ```
 
+**Verified 2026-07-10 (HTTP 200).** The file exposes exactly the symbols we need:
+
+| Symbol | What it is |
+|---|---|
+| `normalize_answer(s)` | SQuAD-style normalisation: lowercase, strip punctuation/articles/extra whitespace |
+| `token_f1_score(prediction, ground_truth)` | **Answer-F1** (token-level). Returns integer `0` — not `0.0` — when there is no overlap |
+| `paragraph_f1_score(prediction, ground_truth)` | **Evidence-F1** (set-F1 over evidence paragraph strings) |
+
+> ⚠️ **Use `paragraph_f1_score`. Do not hand-roll set-F1.** Upstream contains a special case that a
+> naive implementation gets wrong:
+> ```python
+> if not ground_truth and not prediction:
+>     return 1.0     # unanswerable question + empty prediction == perfect
+> ```
+> A hand-rolled version returning `0.0` there would silently penalise correct abstention — on QASPER's
+> test split, 142 queries have no resolvable evidence, so this is not a hypothetical edge case.
+
 If the URL 404s, locate the current path in `allenai/qasper-led-baseline` and record the exact commit SHA in the commit message. **Never hand-write a substitute.**
 
 - [ ] **Step 2: Write the failing test**
@@ -1618,27 +1635,18 @@ Now replace `src/amrag/eval/answer.py` with:
 # src/amrag/eval/answer.py
 """Adapter onto the vendored official QASPER evaluator.
 
-Answer-F1 comes from vendor/qasper_eval.py, downloaded unmodified from
-allenai/qasper-led-baseline. Reimplementing it would silently break
-comparability with the paper.
+BOTH metrics come from vendor/qasper_eval.py, downloaded unmodified from
+allenai/qasper-led-baseline:
 
-Evidence-F1 is set-F1 over evidence *paragraph strings* -- QASPER's evidence
-annotations are verbatim paragraphs, so set membership is exact-match, not
-token overlap. (Confirm against the vendored file: if it exposes an evidence
-scorer, delete ours and call theirs.)
+  token_f1_score(pred, ref)          -> Answer-F1   (SQuAD-normalised token F1)
+  paragraph_f1_score(pred, gold)     -> Evidence-F1 (set F1 over paragraph strings)
+
+We only reshape our data into their expected form. Reimplementing either would
+silently break comparability with the paper -- and `paragraph_f1_score` carries
+a special case (empty gold + empty prediction == 1.0, i.e. correct abstention on
+an unanswerable question) that a naive set-F1 gets wrong.
 """
-from vendor.qasper_eval import token_f1_score
-
-
-def _set_f1(predicted: list[str], gold: list[str]) -> float:
-    p, g = set(predicted), set(gold)
-    if not p or not g:
-        return 0.0
-    tp = len(p & g)
-    if tp == 0:
-        return 0.0
-    precision, recall = tp / len(p), tp / len(g)
-    return 2 * precision * recall / (precision + recall)
+from vendor.qasper_eval import paragraph_f1_score, token_f1_score
 
 
 def score_answers(
@@ -1650,6 +1658,9 @@ def score_answers(
 
     A qid present in `gold` but absent from `predictions` scores 0 -- an
     unanswered question is a failure, not an exemption.
+
+    `token_f1_score` returns int 0 on no overlap; float() keeps the return type
+    homogeneous so `to_markdown`'s `:.4f` formatting never sees an int.
     """
     if not gold:
         return {"answer_f1": 0.0, "evidence_f1": 0.0}
@@ -1657,9 +1668,11 @@ def score_answers(
     answer_scores, evidence_scores = [], []
     for qid, g in gold.items():
         pred = predictions.get(qid, "")
-        answer_scores.append(max(token_f1_score(pred, ref) for ref in g["answers"]))
+        answer_scores.append(float(max(token_f1_score(pred, ref) for ref in g["answers"])))
         if retrieved is not None:
-            evidence_scores.append(_set_f1(retrieved.get(qid, []), g["evidence"]))
+            evidence_scores.append(
+                float(paragraph_f1_score(retrieved.get(qid, []), g["evidence"]))
+            )
 
     return {
         "answer_f1": sum(answer_scores) / len(answer_scores),
