@@ -36,13 +36,13 @@ Verified: the drive is `ntfs3` and **supports symlinks and hardlinks**, so the H
 |---|---|---|
 | `Qwen/Qwen2.5-VL-3B-Instruct` (M2 base) | 7.51 GB | not needed in M1 |
 | `vidore/colqwen2.5-v0.2` adapter (M2) | 0.26 GB | not needed in M1 |
-| `BAAI/bge-m3` | **2.29 GB** | repo is 4.57 GB — it ships a duplicate ONNX export. Use `allow_patterns` to skip it. |
+| `BAAI/bge-m3` | ~~2.29 GB~~ → **4.3 GB MEASURED** | ⚠️ `sentence-transformers` pulls **both** `model.safetensors` (2.2 GB) *and* the legacy `pytorch_model.bin` (2.2 GB) — the same weights twice. (Not an ONNX export, as earlier research claimed.) To avoid, pre-fetch with `snapshot_download(..., ignore_patterns=["pytorch_model.bin", "onnx/*"])` and load from the local dir. Not worth doing at 390 GB free. |
 | `BAAI/bge-reranker-v2-m3` | 2.29 GB | |
 | `allenai/qasper` | 14.7 MB dl → 36.8 MB arrow | |
 | `princeton-nlp/LitSearch` `query` | 49 KB | |
 | `princeton-nlp/LitSearch` `corpus_clean` | 1.26 GB | title+abstract. **This is the M1 corpus.** |
 | `princeton-nlp/LitSearch` `corpus_s2orc` | 1.50 GB | full text. **Not needed in M1.** |
-| **M1 total** | **≈ 6.0 GB** | |
+| **M1 total** | ~~≈ 6.0 GB~~ → **≈ 8.3 GB** | Revised after measurement. `_cache/` measured at **11 GB** after Task 7 (includes pip wheel cache ~2.8 GB). |
 | ViDoRe v2 (M2) | ≈ 2.41 GB | |
 | `google/spiqa` **test splits only** | **443 MB** | ⚠ **full repo is 34.86 GB** — `train_val Images.zip` alone is 32.02 GB. Always use `allow_patterns`. |
 | M3DocVQA PDFs (M3) | **unpublished** | Bloomberg ships a downloader script, not a sized artifact. Budget ~10–20 GB, verify empirically. |
