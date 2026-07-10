@@ -1,12 +1,26 @@
 """QASPER adapter. Retrieval unit = one evidence paragraph.
 
 Evidence in QASPER is given as verbatim paragraph strings, so we resolve them
-back to paragraph indices by exact match. Unresolvable evidence is dropped and
-counted -- silently ignoring it would inflate Recall@k.
+back to paragraph indices by whitespace-normalised exact match. Unresolvable
+evidence is dropped and counted -- silently ignoring it would inflate
+Recall@k. Drops fall into three disjoint buckets, checked in this order:
+
+  1. FLOAT SELECTED evidence points at a table/figure, not a body paragraph
+     -- a text retriever structurally cannot retrieve these.
+  2. Section-name evidence matches one of the paper's section headings, not
+     an indexed paragraph -- we never index section names.
+  3. Everything else ("other") is an unexplained miss and worth watching.
 """
+import re
 from typing import Iterator
 
 from amrag.corpus.base import Corpus, Document, Query
+
+_FLOAT_PREFIX = "FLOAT SELECTED"
+
+
+def _normalise(s: str) -> str:
+    return re.sub(r"\s+", " ", s).strip()
 
 
 def _doc_id(paper_id: str, para_idx: int) -> str:
@@ -23,6 +37,9 @@ def _paragraphs_from_paper(paper: dict) -> list[str]:
 class QasperCorpus(Corpus):
     def __init__(self, papers: list[dict]) -> None:
         self._papers = papers
+        self.dropped_float = 0
+        self.dropped_section_name = 0
+        self.dropped_other = 0
         self.dropped_evidence = 0
 
     @classmethod
@@ -55,15 +72,34 @@ class QasperCorpus(Corpus):
         out: dict[str, dict[str, int]] = {}
         for paper in self._papers:
             paras = _paragraphs_from_paper(paper)
-            index = {p: i for i, p in enumerate(paras)}
+            # Normalised-key index. Collisions keep the first (lowest-index)
+            # paragraph rather than overwriting -- and never crash.
+            index: dict[str, int] = {}
+            for i, p in enumerate(paras):
+                key = _normalise(p)
+                if key not in index:
+                    index[key] = i
+            # Some papers have an untitled leading section, recorded as
+            # `None` rather than "" -- it can never equal an evidence
+            # string, so skip it rather than crashing on it.
+            section_names = {_normalise(s) for s in paper["full_text"]["section_name"]
+                             if s is not None}
             qas = paper["qas"]
             for qid, ann in zip(qas["question_id"], qas["answers"]):
                 rels: dict[str, int] = {}
                 for a in ann["answer"]:
                     for ev in a["evidence"]:
-                        if ev in index:
-                            rels[_doc_id(paper["id"], index[ev])] = 1
+                        key = _normalise(ev)
+                        if key in index:
+                            rels[_doc_id(paper["id"], index[key])] = 1
+                        elif key.startswith(_FLOAT_PREFIX):
+                            self.dropped_float += 1
+                            self.dropped_evidence += 1
+                        elif key in section_names:
+                            self.dropped_section_name += 1
+                            self.dropped_evidence += 1
                         else:
+                            self.dropped_other += 1
                             self.dropped_evidence += 1
                 out[qid] = rels
         return out
