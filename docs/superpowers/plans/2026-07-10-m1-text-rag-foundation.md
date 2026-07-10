@@ -25,6 +25,11 @@ Copied verbatim from `docs/superpowers/specs/2026-07-10-multimodal-rag-design.md
 
 Measured 2026-07-10. **`/` (home) has only 35 GB free; the project drive has 407 GB.** Everything cacheable must live on the project drive.
 
+**Single-folder rule (user requirement):** every downloaded byte — HF models, HF datasets, torch
+weights, derived artefacts — lands under `<repo>/_cache/`. `rm -rf _cache` reclaims all of it and
+leaves a working repo. `scripts/disk.sh` reports what is in there. `_cache/` is git-ignored; nothing
+else in the tree grows.
+
 Verified: the drive is `ntfs3` and **supports symlinks and hardlinks**, so the HuggingFace cache works there unmodified. Do *not* set `HF_HUB_DISABLE_SYMLINKS`.
 
 | Item | Size | Note |
@@ -136,10 +141,40 @@ __version__ = "0.1.0"
 `scripts/env.sh` — **this is the file that keeps `/` from filling up:**
 
 ```bash
-# source this before any work. / has only 35GB free; the project drive has 407GB.
-export HF_HOME="/media/giorgos-miltos-sandalis/8C645C0B645BF684/hf-cache"
-export AMRAG_DATA="/media/giorgos-miltos-sandalis/8C645C0B645BF684/amrag-data"
-mkdir -p "$HF_HOME" "$AMRAG_DATA"
+#!/usr/bin/env bash
+# Source before any work.  /  has ~35 GB free; the project drive has ~407 GB.
+#
+# EVERY downloaded byte lands under a single folder: $AMRAG_CACHE.
+#   rm -rf "$AMRAG_CACHE"     <- reclaims all of it; the repo still works.
+# Nothing else in the tree grows. Do not let any tool default to ~/.cache.
+
+PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+export AMRAG_CACHE="$PROJECT_ROOT/_cache"
+export HF_HOME="$AMRAG_CACHE/huggingface"       # models + datasets
+export TORCH_HOME="$AMRAG_CACHE/torch"
+export AMRAG_DATA="$AMRAG_CACHE/data"           # our own derived artefacts
+
+mkdir -p "$HF_HOME" "$TORCH_HOME" "$AMRAG_DATA" || {
+  echo "FATAL: cannot create $AMRAG_CACHE" >&2; return 1 2>/dev/null || exit 1; }
+
+# The project path contains a space ("Personal Projects"). Fail loudly now
+# rather than inside a subprocess that forgot to quote.
+[ -w "$HF_HOME" ] || { echo "FATAL: $HF_HOME not writable" >&2; return 1 2>/dev/null || exit 1; }
+
+echo "AMRAG_CACHE=$AMRAG_CACHE"
+```
+
+`scripts/disk.sh` — so the cache is never a mystery:
+
+```bash
+#!/usr/bin/env bash
+source "$(dirname "${BASH_SOURCE[0]}")/env.sh" >/dev/null
+echo "Everything below is safe to delete (rm -rf \"\$AMRAG_CACHE\"):"
+du -sh "$AMRAG_CACHE"/* 2>/dev/null | sort -h
+echo "---"
+du -sh "$AMRAG_CACHE"
+df -h --output=target,avail "$AMRAG_CACHE" | tail -1
 ```
 
 ```bash
@@ -169,9 +204,18 @@ Expected: PASS
 
 ```bash
 git config core.filemode false
-printf '%s\n' '.venv/' 'hf-cache/' 'amrag-data/' '.env' 'results/' >> .gitignore
+printf '%s\n' '.venv/' '_cache/' '.env' >> .gitignore    # results/ IS committed
+chmod +x scripts/env.sh scripts/disk.sh
 git add pyproject.toml src tests scripts .env.example .gitignore
-git commit -m "feat: project scaffold, env pinning cache to project drive"
+git commit -m "feat: project scaffold; all bulk data confined to _cache/"
+```
+
+Sanity-check the confinement before moving on — nothing may land in `$HOME`:
+
+```bash
+source scripts/env.sh
+python -c "import os,huggingface_hub as h; print(h.constants.HF_HUB_CACHE)"
+# must print a path under .../adaptive-multimodal-rag/_cache/huggingface
 ```
 
 ---
@@ -189,13 +233,14 @@ git commit -m "feat: project scaffold, env pinning cache to project drive"
 
 ```python
 # tests/test_types.py
+import dataclasses
 import pytest
 from amrag.types import Hit, Span
 
 def test_hit_is_frozen():
     h = Hit(doc_id="d1", score=1.0, granularity="passage", modality="text")
-    with pytest.raises(Exception):
-        h.score = 2.0
+    with pytest.raises(dataclasses.FrozenInstanceError):   # not bare Exception:
+        h.score = 2.0                                      # that would pass on a typo
 
 def test_hit_rejects_unknown_granularity():
     with pytest.raises(ValueError):
