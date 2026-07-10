@@ -5,6 +5,7 @@ outside pytest's tmp_path. See .superpowers/sdd/task17-brief.md for the six
 required properties this file is organised around.
 """
 import hashlib
+import os
 import shutil
 
 import numpy as np
@@ -160,6 +161,65 @@ def test_write_uses_a_temp_file_and_os_replace_leaving_no_tmp_behind(tmp_path):
     assert leftover_tmp == []
     real_files = list((tmp_path / "m").glob("*.npz"))
     assert len(real_files) == 2
+
+
+def test_target_path_is_published_by_an_atomic_rename(tmp_path, monkeypatch):
+    """Atomicity is a syscall-level contract, so assert it at that level.
+
+    Leaving no .tmp behind is necessary but nowhere near sufficient: a
+    `shutil.copyfile(tmp, path); unlink(tmp)` implementation also leaves no
+    tmp behind, yet a concurrent reader can observe `path` half-written.
+    Only a rename publishes the entry indivisibly, so pin the rename.
+    """
+    import amrag.index.cache as cache_mod
+
+    renames: list[tuple[str, str]] = []
+    real_replace = os.replace
+
+    def spy(src, dst):
+        renames.append((str(src), str(dst)))
+        real_replace(src, dst)
+
+    monkeypatch.setattr(cache_mod.os, "replace", spy)
+    enc = CachedEncoder(SpyEncoder(), model_id="m", root=tmp_path)
+    enc.encode(["a", "b"])
+
+    assert len(renames) == 2, "each entry must be published by exactly one rename"
+    for src, dst in renames:
+        assert dst.endswith(".npz")
+        assert ".tmp-" in src, "must rename FROM a temp file, not write in place"
+        assert os.path.dirname(src) == os.path.dirname(dst), (
+            "temp file must live in the destination directory, or the rename "
+            "can cross a filesystem boundary and stop being atomic"
+        )
+
+
+def test_a_crash_mid_serialisation_leaves_no_file_at_the_target_path(tmp_path):
+    """The SIGINT-mid-write case. A reader must never find a torn file."""
+    import amrag.index.cache as cache_mod
+
+    enc = CachedEncoder(SpyEncoder(), model_id="m", root=tmp_path)
+    path = enc._path("a")
+
+    def exploding_savez(fh, **kw):
+        fh.write(b"PK\x03\x04 partial npz header")   # realistic torn write
+        raise KeyboardInterrupt("simulated SIGINT mid-write")
+
+    original = cache_mod.np.savez
+    cache_mod.np.savez = exploding_savez
+    try:
+        with pytest.raises(KeyboardInterrupt):
+            enc.encode(["a", "b"])
+    finally:
+        cache_mod.np.savez = original
+
+    assert not path.exists(), "a torn file was published under the real name"
+    assert list((tmp_path / "m").glob("*.tmp-*")) == [], "temp file not cleaned up"
+
+    # and the entry is simply recomputed on the next run
+    spy = SpyEncoder()
+    out = CachedEncoder(spy, model_id="m", root=tmp_path).encode(["a"])
+    assert np.allclose(out[0], _vec("a"))
 
 
 def test_corrupt_cache_file_is_detected_and_rebuilt(tmp_path):
