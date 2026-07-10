@@ -2,7 +2,7 @@ from amrag.corpus.base import Document, Query
 from amrag.corpus.litsearch import LitSearchCorpus
 
 RAW_CORPUS = [{"corpusid": 101, "title": "Deep Nets", "abstract": "We study nets."}]
-RAW_QUERIES = [{"query_set": "s", "query": "papers on nets?", "citations": [101], "specificity": 0}]
+RAW_QUERIES = [{"query_set": "s", "query": "papers on nets?", "corpusids": [101], "specificity": 0}]
 
 
 def test_document_concatenates_title_and_abstract():
@@ -17,21 +17,21 @@ def test_queries_get_stable_positional_ids():
     assert list(c.queries()) == [Query(qid="q0", text="papers on nets?")]
 
 
-def test_qrels_come_from_citations():
+def test_qrels_come_from_corpusids():
     c = LitSearchCorpus.from_raw(RAW_CORPUS, RAW_QUERIES)
     assert c.qrels() == {"q0": {"101": 1}}
 
 
 def test_citation_to_missing_paper_is_dropped():
-    c = LitSearchCorpus.from_raw(RAW_CORPUS, [{**RAW_QUERIES[0], "citations": [101, 999]}])
+    c = LitSearchCorpus.from_raw(RAW_CORPUS, [{**RAW_QUERIES[0], "corpusids": [101, 999]}])
     assert c.qrels() == {"q0": {"101": 1}}
     assert c.dropped_citations == 1
 
 
 def test_query_with_no_resolvable_citations_gets_an_empty_dict_not_a_missing_key():
-    # Every citation for this query fails to resolve -- the qid must still be
+    # Every corpusid for this query fails to resolve -- the qid must still be
     # a key in the qrels dict, mapped to {}, never absent.
-    c = LitSearchCorpus.from_raw(RAW_CORPUS, [{**RAW_QUERIES[0], "citations": [999]}])
+    c = LitSearchCorpus.from_raw(RAW_CORPUS, [{**RAW_QUERIES[0], "corpusids": [999]}])
     rels = c.qrels()
     assert "q0" in rels
     assert rels["q0"] == {}
@@ -46,10 +46,32 @@ def test_dropped_citations_counter_is_idempotent_across_calls():
     shipped a bug where a dropped-item counter doubled on the second call
     because it accumulated onto `self.x` instead of a local variable.
     """
-    c = LitSearchCorpus.from_raw(RAW_CORPUS, [{**RAW_QUERIES[0], "citations": [101, 999]}])
+    c = LitSearchCorpus.from_raw(RAW_CORPUS, [{**RAW_QUERIES[0], "corpusids": [101, 999]}])
     first = c.qrels()
     dropped_after_first = c.dropped_citations
     second = c.qrels()
     dropped_after_second = c.dropped_citations
     assert first == second
     assert dropped_after_first == dropped_after_second == 1
+
+
+def test_qrels_ignore_corpus_citations_field():
+    """Regression test documenting the schema trap.
+
+    `corpus_clean` rows carry a field literally named `citations`, but it
+    means that paper's own outgoing bibliography -- not relevance to any
+    query. qrels() must read the query row's `corpusids` and must never be
+    "fixed" (e.g. after a future KeyError) to read the corpus row's
+    `citations` instead -- that would produce plausible, entirely
+    fictitious relevance labels.
+    """
+    corpus = [{
+        "corpusid": 101,
+        "title": "Deep Nets",
+        "abstract": "We study nets.",
+        "citations": [999, 888],  # bogus outgoing bibliography, not relevance
+    }]
+    queries = [{"query_set": "s", "query": "papers on nets?", "corpusids": [101], "specificity": 0}]
+    c = LitSearchCorpus.from_raw(corpus, queries)
+    assert c.qrels() == {"q0": {"101": 1}}
+    assert c.dropped_citations == 0

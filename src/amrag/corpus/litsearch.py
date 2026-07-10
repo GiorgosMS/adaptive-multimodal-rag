@@ -3,11 +3,17 @@
 Uses the `corpus_clean` config (1.26 GB). `corpus_s2orc` (full text, 1.50 GB)
 is deliberately not loaded in M1 -- see the spec's disk budget.
 
-qrels come from each query's `citations` list (paper-level relevance): a
-citation that does not resolve to a corpus document is dropped and counted
+qrels come from each query's `corpusids` list (paper-level relevance): a
+corpus id that does not resolve to a corpus document is dropped and counted
 in `dropped_citations` rather than silently ignored -- silently swallowing
-it would inflate Recall@k. A query whose citations all fail to resolve
+it would inflate Recall@k. A query whose corpusids all fail to resolve
 still gets an entry in `qrels()`, mapped to `{}`, never a missing key.
+
+`corpus_clean` rows also carry a field literally named `citations`, but it
+means that paper's own outgoing bibliography, not relevance to any query.
+qrels() must never read it -- see test_qrels_ignore_corpus_citations_field.
+The counter stays named `dropped_citations` because these labels are
+citation-derived, even though the field we read is `corpusids`.
 """
 from typing import Iterator
 
@@ -53,7 +59,7 @@ class LitSearchCorpus(Corpus):
         dropped_citations = 0
         for i, row in enumerate(self._queries):
             rels: dict[str, int] = {}
-            for cid in row["citations"]:
+            for cid in row["corpusids"]:
                 if str(cid) in known:
                     rels[str(cid)] = 1
                 else:
