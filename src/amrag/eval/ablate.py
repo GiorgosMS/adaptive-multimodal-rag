@@ -32,6 +32,30 @@ def to_markdown(rows: list[dict]) -> str:
     if not rows:
         return ""
     cols = list(rows[0].keys())
+    expected_keys = set(cols)
+
+    # Validate that every row has exactly the expected columns
+    for i, r in enumerate(rows):
+        row_keys = set(r.keys())
+        if row_keys != expected_keys:
+            missing = expected_keys - row_keys
+            extra = row_keys - expected_keys
+            if missing and extra:
+                raise ValueError(
+                    f"row {i} has keys {row_keys}; expected {expected_keys} "
+                    f"(missing: {missing}, extra: {extra})"
+                )
+            elif missing:
+                raise ValueError(
+                    f"row {i} has keys {row_keys}; expected {expected_keys} "
+                    f"(missing: {missing})"
+                )
+            else:  # extra
+                raise ValueError(
+                    f"row {i} has keys {row_keys}; expected {expected_keys} "
+                    f"(extra: {extra})"
+                )
+
     head = "| " + " | ".join(cols) + " |"
     sep = "| " + " | ".join("---" for _ in cols) + " |"
     body = [

@@ -27,3 +27,42 @@ def test_markdown_table_has_one_row_per_config():
 def test_config_rejects_retrieving_with_neither_arm():
     with pytest.raises(ValueError):
         Config(name="x", sparse=False, dense=False, rerank=False, hyde=False)
+
+
+def test_markdown_missing_key_raises_valueerror():
+    """A row missing a key derived from rows[0] raises ValueError with row index and missing keys."""
+    rows = [{"config": "naive", "recall@10": 0.5}, {"config": "+hybrid"}]
+    with pytest.raises(ValueError) as exc_info:
+        to_markdown(rows)
+    msg = str(exc_info.value)
+    assert "row 1" in msg
+    assert "recall@10" in msg
+    assert "missing" in msg.lower()
+
+
+def test_markdown_extra_key_raises_valueerror():
+    """A row with an extra key not in rows[0] raises ValueError."""
+    rows = [{"config": "naive", "recall@10": 0.5}, {"config": "+hybrid", "recall@10": 0.6, "extra": "value"}]
+    with pytest.raises(ValueError) as exc_info:
+        to_markdown(rows)
+    msg = str(exc_info.value)
+    assert "row 1" in msg
+    assert "extra" in msg
+
+
+def test_markdown_float_formatting():
+    """Floats are formatted with :.4f, not as integers."""
+    rows = [{"config": "naive", "recall@10": 0.5}]
+    md = to_markdown(rows)
+    assert "0.5000" in md
+    assert "0.5" in md or "0.5000" in md
+
+
+def test_markdown_int_renders_as_int_not_float():
+    """An int value (e.g. {"missing_predictions": 3}) renders as 3, not 3.0000."""
+    rows = [{"missing_predictions": 3}]
+    md = to_markdown(rows)
+    assert "3" in md
+    assert "3.0000" not in md
+    # Verify it's exactly "3" and not "3.0000" by checking the table contains " 3 |"
+    assert "| 3 |" in md
