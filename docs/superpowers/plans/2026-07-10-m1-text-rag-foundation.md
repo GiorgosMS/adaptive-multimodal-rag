@@ -1716,7 +1716,15 @@ Upstream: allenai/qasper-led-baseline @ <SHA>. Not reimplemented."
 
 **Interfaces:**
 - Consumes: everything above.
-- Produces: `Config(name:str, sparse:bool, dense:bool, rerank:bool, hyde:bool)`; `evaluate_config(cfg, corpus, retrievers, ks) -> dict[str,float]`; `to_markdown(rows: list[dict]) -> str`.
+- Produces: `Config(name:str, sparse:bool, dense:bool, rerank:bool, hyde:bool)`; `ABLATION_LADDER: list[Config]`; `to_markdown(rows: list[dict]) -> str`.
+
+> An earlier draft of this line also promised `evaluate_config(cfg, corpus, retrievers, ks)`. There is
+> no such function and there should not be: `scripts/run_m1.py` (Task 14) owns the evaluation loop, and
+> a second entry point that nothing calls is dead weight. YAGNI.
+
+`to_markdown` derives its columns from `rows[0]`. If a later row is missing one of those keys it must
+raise `ValueError` naming the key — a `KeyError` from deep inside a format string, after a 40-minute
+retrieval run, is a bad way to learn that two rows disagreed.
 
 - [ ] **Step 1: Write the failing test**
 
