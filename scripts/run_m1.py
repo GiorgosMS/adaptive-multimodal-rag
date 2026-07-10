@@ -16,7 +16,7 @@ from amrag.generate.llm import DeepSeekLLM
 from amrag.index.cache import CachedEncoder
 from amrag.index.text import BGEM3Encoder, BM25Retriever, DenseRetriever, Encoder
 from amrag.retrieve.fuse import rrf_fuse
-from amrag.retrieve.hyde import hyde_transform
+from amrag.retrieve.hyde import hyde_transform_batch
 from amrag.retrieve.rerank import BGEReranker, rerank
 
 # model_id under which BGE-M3 vectors are cached (Task 17). Not the class
@@ -59,9 +59,18 @@ def run(corpus, encoder: Encoder, k: int = 10, limit: int = 0, with_hyde: bool =
     for cfg in ladder:
         if cfg.rerank and reranker is None:
             reranker = BGEReranker(device=device)
+        # HyDE is one independent LLM round-trip per query. Precompute the
+        # whole rung's expansions concurrently (positional zip -> keyed by
+        # qid) instead of blocking the retrieval loop on ~2.5s of network
+        # latency per query. Same expansions, ~max_workers-fold less wall time.
+        hyde_texts: dict[str, str] = {}
+        if cfg.hyde:
+            print(f"  [{cfg.name}] expanding {len(queries)} queries with HyDE...", flush=True)
+            expansions = hyde_transform_batch([q.text for q in queries], llm)
+            hyde_texts = {q.qid: e for q, e in zip(queries, expansions)}
         per_query = []
         for q in queries:
-            search_text = hyde_transform(q.text, llm) if cfg.hyde else q.text
+            search_text = hyde_texts[q.qid] if cfg.hyde else q.text
             runs = []
             if cfg.dense:
                 runs.append(dense.retrieve(search_text, k=100))
