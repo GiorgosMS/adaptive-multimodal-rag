@@ -6,20 +6,26 @@ passed, and the skip is printed -- a silently-omitted rung that prints numbers
 identical to the rung below it would read as "HyDE had no effect", which is a
 fabricated finding.
 """
-import argparse, pathlib
+import argparse, os, pathlib
 
 from amrag.corpus.litsearch import LitSearchCorpus
 from amrag.corpus.qasper import QasperCorpus
 from amrag.eval.ablate import ABLATION_LADDER, to_markdown
 from amrag.eval.retrieval import mrr, ndcg_at_k, precision_at_k, recall_at_k
 from amrag.generate.llm import DeepSeekLLM
-from amrag.index.text import BGEM3Encoder, BM25Retriever, DenseRetriever
+from amrag.index.cache import CachedEncoder
+from amrag.index.text import BGEM3Encoder, BM25Retriever, DenseRetriever, Encoder
 from amrag.retrieve.fuse import rrf_fuse
 from amrag.retrieve.hyde import hyde_transform
 from amrag.retrieve.rerank import BGEReranker, rerank
 
+# model_id under which BGE-M3 vectors are cached (Task 17). Not the class
+# name -- the HF repo id -- so a future second dense encoder can never
+# collide with this one's cache directory.
+_BGE_M3_MODEL_ID = "BAAI/bge-m3"
 
-def run(corpus, k: int = 10, limit: int = 0, with_hyde: bool = False,
+
+def run(corpus, encoder: Encoder, k: int = 10, limit: int = 0, with_hyde: bool = False,
         device: str = "cuda") -> str:
     docs = list(corpus.documents())
     texts = {d.doc_id: d.text for d in docs}
@@ -29,8 +35,9 @@ def run(corpus, k: int = 10, limit: int = 0, with_hyde: bool = False,
         queries = queries[:limit]
 
     print(f"[{len(docs)} docs, {len(queries)} queries, device={device}] encoding corpus...", flush=True)
-    encoder = BGEM3Encoder(device=device)
     dense = DenseRetriever.build(docs, encoder)
+    if hasattr(encoder, "hits") and hasattr(encoder, "misses"):
+        print(f"cache: {encoder.hits} hit, {encoder.misses} miss", flush=True)
     sparse = BM25Retriever.build(docs)
     llm = DeepSeekLLM() if with_hyde else None
 
@@ -90,10 +97,28 @@ if __name__ == "__main__":
     ap.add_argument("--with-hyde", action="store_true", help="enable the +hyde rung (costs API calls)")
     ap.add_argument("--device", default="cuda", choices=["cuda", "cpu"],
                     help="cpu avoids contending for a GPU that other jobs are using")
+    ap.add_argument("--no-cache", action="store_true",
+                    help="bypass the persistent embedding cache and always re-encode")
     a = ap.parse_args()
 
+    if a.no_cache:
+        encoder: Encoder = BGEM3Encoder(device=a.device)
+    else:
+        # Fail loudly and BEFORE loading the model: a silent fallback to
+        # ~/.cache would write GBs of embeddings onto the nearly-full /
+        # partition. `source scripts/env.sh` sets this; --no-cache opts out.
+        amrag_data = os.environ.get("AMRAG_DATA")
+        if not amrag_data:
+            raise SystemExit(
+                "AMRAG_DATA is not set. Run `source scripts/env.sh` first, "
+                "or pass --no-cache to deliberately skip the persistent "
+                "embedding cache."
+            )
+        cache_root = pathlib.Path(amrag_data) / "embeddings"
+        encoder = CachedEncoder(BGEM3Encoder(device=a.device), _BGE_M3_MODEL_ID, cache_root)
+
     corpus = QasperCorpus.load("test") if a.dataset == "qasper" else LitSearchCorpus.load()
-    md = run(corpus, limit=a.limit, with_hyde=a.with_hyde, device=a.device)
+    md = run(corpus, encoder, limit=a.limit, with_hyde=a.with_hyde, device=a.device)
     suffix = "_hyde" if a.with_hyde else ""
     out = pathlib.Path(f"results/m1_{a.dataset}{suffix}.md")
     out.parent.mkdir(exist_ok=True)
