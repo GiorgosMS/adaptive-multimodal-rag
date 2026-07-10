@@ -661,7 +661,13 @@ Dropped-evidence rate on test split: <paste Step 5 output>"
 
 **Interfaces:**
 - Consumes: `Document`, `Query`, `Corpus` from Task 4.
-- Produces: `LitSearchCorpus`, same three methods. Retrieval unit = **one paper** (`corpus_clean`: title + abstract). qrels come from the `citations` field.
+- Produces: `LitSearchCorpus`, same three methods. Retrieval unit = **one paper** (`corpus_clean`: title + abstract). qrels come from the query row's **`corpusids`** field.
+
+> ⚠️ **Verified schema trap (2026-07-10).** The `query` config's relevance field is **`corpusids`**, *not* `citations`:
+> `['query_set', 'query', 'specificity', 'quality', 'corpusids']` — 597 rows.
+> The `corpus_clean` config **also has a field named `citations`** — but it means *that paper's own outgoing bibliography*
+> (`['corpusid','title','abstract','citations','full_paper']`, 64,183 rows). Reading qrels from that field would
+> yield plausible, entirely fictitious relevance labels. **Use `corpusids`, from the query rows, and nothing else.**
 
 - [ ] **Step 1: Write the failing test**
 
@@ -671,7 +677,7 @@ from amrag.corpus.base import Document, Query
 from amrag.corpus.litsearch import LitSearchCorpus
 
 RAW_CORPUS = [{"corpusid": 101, "title": "Deep Nets", "abstract": "We study nets."}]
-RAW_QUERIES = [{"query_set": "s", "query": "papers on nets?", "citations": [101], "specificity": 0}]
+RAW_QUERIES = [{"query_set": "s", "query": "papers on nets?", "corpusids": [101], "specificity": 0}]
 
 def test_document_concatenates_title_and_abstract():
     c = LitSearchCorpus.from_raw(RAW_CORPUS, RAW_QUERIES)
@@ -688,7 +694,7 @@ def test_qrels_come_from_citations():
     assert c.qrels() == {"q0": {"101": 1}}
 
 def test_citation_to_missing_paper_is_dropped():
-    c = LitSearchCorpus.from_raw(RAW_CORPUS, [{**RAW_QUERIES[0], "citations": [101, 999]}])
+    c = LitSearchCorpus.from_raw(RAW_CORPUS, [{**RAW_QUERIES[0], "corpusids": [101, 999]}])
     assert c.qrels() == {"q0": {"101": 1}}
     assert c.dropped_citations == 1
 ```
@@ -742,16 +748,24 @@ class LitSearchCorpus(Corpus):
             yield Query(qid=f"q{i}", text=row["query"])
 
     def qrels(self) -> dict[str, dict[str, int]]:
+        """Relevance comes from the query row's `corpusids`.
+
+        NOT from the corpus row's `citations` field, which exists but means
+        that paper's own outgoing bibliography. Counters accumulate in a local
+        and are assigned once, so repeated calls report identical numbers.
+        """
         known = {str(r["corpusid"]) for r in self._corpus}
         out: dict[str, dict[str, int]] = {}
+        dropped = 0
         for i, row in enumerate(self._queries):
             rels: dict[str, int] = {}
-            for cid in row["citations"]:
+            for cid in row["corpusids"]:
                 if str(cid) in known:
                     rels[str(cid)] = 1
                 else:
-                    self.dropped_citations += 1
+                    dropped += 1
             out[f"q{i}"] = rels
+        self.dropped_citations = dropped
         return out
 ```
 
