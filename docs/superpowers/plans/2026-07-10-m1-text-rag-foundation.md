@@ -87,7 +87,7 @@ Rationale: `index/` owns *how things are stored and searched*; `retrieve/` owns 
 ### Task 1: Project scaffold and environment
 
 **Files:**
-- Create: `pyproject.toml`, `src/amrag/__init__.py`, `tests/test_smoke.py`, `.env.example`, `scripts/env.sh`
+- Create: `pyproject.toml`, `src/amrag/__init__.py`, `tests/test_smoke.py`, `.env.example`, `scripts/env.sh`, `scripts/disk.sh`
 
 **Interfaces:**
 - Consumes: nothing.
@@ -215,8 +215,10 @@ Sanity-check the confinement before moving on — nothing may land in `$HOME`:
 
 ```bash
 source scripts/env.sh
-python -c "import os,huggingface_hub as h; print(h.constants.HF_HUB_CACHE)"
+python -c "import huggingface_hub.constants as c; print(c.HF_HUB_CACHE)"
 # must print a path under .../adaptive-multimodal-rag/_cache/huggingface
+# NB: `huggingface_hub.constants` must be imported directly -- on hf_hub >=1.23
+# there is no lazy top-level `constants` attribute, so `h.constants` AttributeErrors.
 ```
 
 ---
