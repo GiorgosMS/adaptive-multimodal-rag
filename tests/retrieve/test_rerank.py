@@ -16,8 +16,9 @@ class _TooManyScorer:
     def score(self, pairs): return [0.5] * (len(pairs) + 3)
 
 class _StubModel:
+    """Stubs sentence_transformers.CrossEncoder's `.predict(pairs)`."""
     def __init__(self, ret): self.ret = ret
-    def compute_score(self, pairs, normalize=True): return self.ret
+    def predict(self, pairs): return self.ret
 
 def _stub_reranker(ret):
     r = BGEReranker.__new__(BGEReranker)
@@ -84,3 +85,29 @@ class TestBGERerankerScore:
         assert len(out) == 3
         assert all(type(x) is float for x in out)
         assert out[0] == pytest.approx(0.1, abs=1e-6)
+
+    def test_ndarray_float32_single_pair(self):
+        """The real backend, CrossEncoder.predict, always returns a
+        np.ndarray -- shape (1,) for one pair, never a bare scalar. This is
+        the exact shape verified live: array([0.98785], dtype=float32)."""
+        r = _stub_reranker(np.array([0.98785], dtype=np.float32))
+        out = r.score([("q", "d")])
+        assert out == [pytest.approx(0.98785, abs=1e-5)]
+        assert type(out[0]) is float
+
+
+@pytest.mark.slow
+def test_bge_reranker_ranks_relevant_document_above_irrelevant():
+    """The test that would have caught the transformers-5.x crash: loads the
+    real BAAI/bge-reranker-v2-m3 weights via CrossEncoder and exercises
+    BGEReranker.score end to end. CPU only (see task constraints). Assert on
+    ORDERING, not absolute score values -- those are not a stable contract.
+    """
+    r = BGEReranker(device="cpu")
+    out = r.score([
+        ("what is the capital of France?", "Paris is the capital of France."),
+        ("what is the capital of France?", "Bananas are a good source of potassium."),
+    ])
+    assert len(out) == 2
+    assert all(type(x) is float for x in out)
+    assert out[0] > out[1]

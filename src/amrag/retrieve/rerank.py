@@ -14,14 +14,19 @@ class Scorer(Protocol):
 
 class BGEReranker:
     def __init__(self, device: str = "cuda") -> None:
-        from FlagEmbedding import FlagReranker
-        self._m = FlagReranker("BAAI/bge-reranker-v2-m3", use_fp16=True, device=device)
+        # Lazy import: FlagEmbedding's compute_score calls
+        # tokenizer.prepare_for_model, removed in transformers 5.x. This
+        # backend (sentence_transformers.CrossEncoder) works on 5.13.0.
+        from sentence_transformers import CrossEncoder
+        self._m = CrossEncoder("BAAI/bge-reranker-v2-m3", device=device)
 
     def score(self, pairs: list[tuple[str, str]]) -> list[float]:
-        raw = self._m.compute_score(pairs, normalize=True)
-        # compute_score returns a bare scalar for one pair, a sequence for many.
-        # np.float32 is not a Python float and is not iterable, so neither
-        # isinstance(raw, float) nor list(raw) is safe on its own.
+        raw = self._m.predict(pairs)
+        # predict() returns a np.ndarray of np.float32, even for a single
+        # pair (shape (1,)). np.float32 is not a Python float and a bare
+        # np.float32 scalar is not iterable, so neither isinstance(raw, float)
+        # nor list(raw) is safe on its own; np.atleast_1d is correct for an
+        # ndarray of any shape too, so this also covers larger batches.
         return [float(x) for x in np.atleast_1d(np.asarray(raw, dtype=float))]
 
 
