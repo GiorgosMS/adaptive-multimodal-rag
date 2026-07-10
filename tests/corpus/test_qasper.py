@@ -167,3 +167,31 @@ def test_none_section_name_does_not_crash_and_evidence_still_drops_as_other():
     c = QasperCorpus.from_raw([paper])
     assert c.qrels() == {"q1": {}}
     assert c.dropped_other == 1
+
+
+def test_qrels_counters_are_idempotent_across_calls():
+    """Counters must describe the corpus, not the call history.
+
+    A driver builds the eval index with qrels(); a measurement script later
+    calls qrels() again just to read the counters. They must agree.
+    """
+    paper = {
+        "id": "p1",
+        "full_text": {"section_name": ["Intro"], "paragraphs": [["Alpha beta."]]},
+        "qas": {
+            "question": ["Q?"],
+            "question_id": ["q1"],
+            "answers": [_ans("Nowhere.")],
+        },
+    }
+    c = QasperCorpus.from_raw([paper])
+    first = c.qrels()
+    counters_after_first = (c.dropped_float, c.dropped_section_name,
+                            c.dropped_other, c.dropped_evidence)
+    second = c.qrels()
+    counters_after_second = (c.dropped_float, c.dropped_section_name,
+                             c.dropped_other, c.dropped_evidence)
+    assert first == second
+    assert counters_after_first == counters_after_second
+    # Invariant: dropped_evidence == sum of the three buckets
+    assert c.dropped_evidence == c.dropped_float + c.dropped_section_name + c.dropped_other

@@ -70,6 +70,13 @@ class QasperCorpus(Corpus):
 
     def qrels(self) -> dict[str, dict[str, int]]:
         out: dict[str, dict[str, int]] = {}
+        # Accumulate counters in local variables to make them idempotent.
+        # Assignment at the end is atomic -- mid-loop exceptions cannot
+        # leave half-updated counters.
+        dropped_float = 0
+        dropped_section_name = 0
+        dropped_other = 0
+        dropped_evidence = 0
         for paper in self._papers:
             paras = _paragraphs_from_paper(paper)
             # Normalised-key index. Collisions keep the first (lowest-index)
@@ -93,13 +100,19 @@ class QasperCorpus(Corpus):
                         if key in index:
                             rels[_doc_id(paper["id"], index[key])] = 1
                         elif key.startswith(_FLOAT_PREFIX):
-                            self.dropped_float += 1
-                            self.dropped_evidence += 1
+                            dropped_float += 1
+                            dropped_evidence += 1
                         elif key in section_names:
-                            self.dropped_section_name += 1
-                            self.dropped_evidence += 1
+                            dropped_section_name += 1
+                            dropped_evidence += 1
                         else:
-                            self.dropped_other += 1
-                            self.dropped_evidence += 1
+                            dropped_other += 1
+                            dropped_evidence += 1
                 out[qid] = rels
+        # Assign atomically at the end so counters describe the corpus,
+        # not the call history.
+        self.dropped_float = dropped_float
+        self.dropped_section_name = dropped_section_name
+        self.dropped_other = dropped_other
+        self.dropped_evidence = dropped_evidence
         return out
