@@ -90,7 +90,10 @@ def test_ties_are_broken_by_stable_corpus_order():
 
 @pytest.mark.slow
 def test_bge_m3_encoder_produces_normalised_vectors():
+    # device="cpu" explicitly: BGEM3Encoder defaults to "cuda", and a test
+    # suite must never silently claim a GPU that another job is training on.
+    # One 1024-dim vector is not worth 2.2 GB of someone else's VRAM.
     from amrag.index.text import BGEM3Encoder
-    v = BGEM3Encoder().encode(["hello world"])
+    v = BGEM3Encoder(device="cpu").encode(["hello world"])
     assert v.shape[1] == 1024
     assert np.linalg.norm(v[0]) == pytest.approx(1.0, abs=1e-3)
