@@ -253,6 +253,12 @@ per-query and cheap on Qwen3-VL.
 
 ### 9.2 Index cost
 
+> ⚠ **DISPUTED — measure before relying on this.** Two independent web sweeps returned different
+> vectors-per-page for ColQwen2.5: **~196** and **up to 768**. ColQwen uses *dynamic* image
+> resolution, so both may be true for different page sizes. The figures below assume 196; at 768
+> they are **4× larger** (still tractable: ~4 GB int8 for 40k pages). **M2 Task 1 is to embed ten
+> real pages and print the tensor shape.** Do not plan storage on either number until then.
+
 ColQwen2.5 emits ~196 vectors/page × 128-dim. At int8: **~25 MB per 1,000 pages.** M3DocVQA's
 40k pages ≈ 1 GB int8 — trivially manageable.
 
@@ -308,8 +314,12 @@ Qdrant native MaxSim.
 - **RTX 4070 indexing throughput (~3–5 pages/s).** Extrapolated from A100 memory-bandwidth ratios.
   No published 4070 benchmark was found. **Measure it in M2 before relying on it.**
 - **API spend estimate ("tens of dollars").** Not modeled; a guess. Meter actual spend from M1.
+- **ColQwen2.5 vectors-per-page (196 vs 768).** Sources disagree; the model uses dynamic resolution.
+  Every index-size figure in §9.2 rests on this. **Measured in M2 Task 1.**
+- **M3DocVQA raw-PDF corpus size.** Genuinely unpublished — Bloomberg ships a Wikipedia downloader
+  script, not a sized artifact. The only data point is an unofficial partial image mirror (~6.2 GB).
 - **QASPER test-split size (~1,451 Q).** Derived by arithmetic (5,049 − 2,593 − 1,005), not stated
-  on the dataset card.
+  on the dataset card. M1 Task 4 Step 5 prints the true number; trust that.
 - **No published human-correlation figures exist for a cheap judge (DeepSeek/Qwen) on L3Score.**
   The only quantitative substitution evidence is SPIQA's "rankings stay consistent" claim. This is
   precisely why §5.2 forbids absolute-score comparisons.
