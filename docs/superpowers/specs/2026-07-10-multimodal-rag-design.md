@@ -175,8 +175,25 @@ multi-hop cross-paper figure retrieval. Deferred; it is the natural bridge to Re
 
 ### 5.2 Judge protocol
 
-Fixed judge: **DeepSeek-V4-flash** (exposes `logprobs`/`top_logprobs` on chat completions; *not* on
-`deepseek-reasoner`).
+Fixed judge: **DeepSeek-V4-flash**.
+
+**Verified against the live API on 2026-07-10** (the served models are exactly `deepseek-v4-flash`
+and `deepseek-v4-pro`; there is no `deepseek-reasoner`):
+
+- ✅ `logprobs=True, top_logprobs=5` works, and `choices[0].logprobs.content[0].top_logprobs` is
+  populated **whenever `content` is non-empty**. L3Score is therefore computable on DeepSeek.
+- ⚠️ **`v4-flash` is a reasoning model.** `usage.completion_tokens_details.reasoning_tokens` was
+  **36 of 38** completion tokens for a one-word answer. `max_tokens` budgets *reasoning + content*,
+  so a tight cap silently yields `content == ""` with `finish_reason == "stop"`. Never set a small
+  `max_tokens` on a judging call.
+- ⚠️ `choices[0].logprobs` also carries a `reasoning_content` list. **Read `.content`, not
+  `.reasoning_content`** — the latter holds logprobs for the chain of thought, not the answer.
+- ⚠️ **Do not normalise tokens when matching `"Yes"`/`"No"`.** The top-5 contained both `'Yes'`
+  (logprob `-0.0`) and `' Yes'` (logprob `-16.037`). Collapsing them with `.strip()` silently
+  substitutes the wrong probability — during design this produced a plausible-looking `0.6481`
+  where the true value is `≈1.0`.
+- 💰 Reasoning tokens are billed as completion tokens, so short answers cost ~19× their visible
+  length. Still cheap: a full 1,451-query QASPER pass is well under $1.
 
 **Constraint, from SPIQA Appendix B:** absolute L3Score shifts with the judge; only *relative
 rankings* are stable across judges. Therefore:
