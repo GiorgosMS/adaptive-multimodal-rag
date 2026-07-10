@@ -153,9 +153,10 @@ PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 export AMRAG_CACHE="$PROJECT_ROOT/_cache"
 export HF_HOME="$AMRAG_CACHE/huggingface"       # models + datasets
 export TORCH_HOME="$AMRAG_CACHE/torch"
+export PIP_CACHE_DIR="$AMRAG_CACHE/pip"         # torch wheels are GBs
 export AMRAG_DATA="$AMRAG_CACHE/data"           # our own derived artefacts
 
-mkdir -p "$HF_HOME" "$TORCH_HOME" "$AMRAG_DATA" || {
+mkdir -p "$HF_HOME" "$TORCH_HOME" "$PIP_CACHE_DIR" "$AMRAG_DATA" || {
   echo "FATAL: cannot create $AMRAG_CACHE" >&2; return 1 2>/dev/null || exit 1; }
 
 # The project path contains a space ("Personal Projects"). Fail loudly now
