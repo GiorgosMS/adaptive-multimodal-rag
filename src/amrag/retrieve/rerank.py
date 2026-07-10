@@ -12,16 +12,41 @@ class Scorer(Protocol):
     def score(self, pairs: list[tuple[str, str]]) -> list[float]: ...
 
 
+_MAX_LENGTH = 512
+_BATCH_SIZE = 16
+
+
 class BGEReranker:
-    def __init__(self, device: str = "cuda") -> None:
+    """Cross-encoder scorer with a bounded memory footprint.
+
+    Both bounds are load-bearing, not tuning knobs. BAAI/bge-reranker-v2-m3
+    declares `model_max_length = 8192`, and CrossEncoder pads every batch to
+    its longest member. QASPER's longest paragraph is 5,303 tokens, so the
+    library defaults (unbounded length, batch 32) tried to allocate 3.37 GiB
+    of attention for a single batch and hit CUDA OOM on a 12 GB card. It
+    "worked" on CPU only because the same allocation came out of system RAM,
+    at roughly 150x the wall-clock cost.
+
+    max_length=512 is near-lossless on this corpus: 52 of 20,221 QASPER
+    paragraphs (0.26%) exceed 512 tokens; p95 is 275 and p99 is 392. The
+    truncated tail is 2 paragraphs beyond 1024 tokens. Raise both bounds via
+    the constructor if you have the VRAM and a longer-passage corpus.
+    """
+
+    def __init__(self, device: str = "cuda", max_length: int = _MAX_LENGTH,
+                 batch_size: int = _BATCH_SIZE) -> None:
         # Lazy import: FlagEmbedding's compute_score calls
         # tokenizer.prepare_for_model, removed in transformers 5.x. This
         # backend (sentence_transformers.CrossEncoder) works on 5.13.0.
-        from sentence_transformers import CrossEncoder
-        self._m = CrossEncoder("BAAI/bge-reranker-v2-m3", device=device)
+        # Import the module, not the symbol, so tests can monkeypatch it.
+        import sentence_transformers
+        self._batch_size = batch_size
+        self._m = sentence_transformers.CrossEncoder(
+            "BAAI/bge-reranker-v2-m3", device=device, max_length=max_length,
+        )
 
     def score(self, pairs: list[tuple[str, str]]) -> list[float]:
-        raw = self._m.predict(pairs)
+        raw = self._m.predict(pairs, batch_size=self._batch_size)
         # predict() returns a np.ndarray of np.float32, even for a single
         # pair (shape (1,)). np.float32 is not a Python float and a bare
         # np.float32 scalar is not iterable, so neither isinstance(raw, float)

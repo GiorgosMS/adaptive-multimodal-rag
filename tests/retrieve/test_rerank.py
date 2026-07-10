@@ -18,11 +18,15 @@ class _TooManyScorer:
 class _StubModel:
     """Stubs sentence_transformers.CrossEncoder's `.predict(pairs)`."""
     def __init__(self, ret): self.ret = ret
-    def predict(self, pairs): return self.ret
+    def predict(self, pairs, **kwargs): return self.ret
 
 def _stub_reranker(ret):
+    # __new__ bypasses __init__, so every attribute __init__ would have set
+    # must be set here too, or these tests fail for reasons unrelated to the
+    # return-type coercion they exist to pin.
     r = BGEReranker.__new__(BGEReranker)
     r._m = _StubModel(ret)
+    r._batch_size = 16
     return r
 
 def test_reranker_overrides_first_stage_order():
@@ -94,6 +98,69 @@ class TestBGERerankerScore:
         out = r.score([("q", "d")])
         assert out == [pytest.approx(0.98785, abs=1e-5)]
         assert type(out[0]) is float
+
+
+class _RecordingCrossEncoder:
+    """Captures the kwargs BGEReranker hands to CrossEncoder, without weights."""
+    def __init__(self, model_name_or_path, **kwargs):
+        self.model_name_or_path = model_name_or_path
+        self.init_kwargs = kwargs
+        self.predict_kwargs = None
+
+    def predict(self, pairs, **kwargs):
+        self.predict_kwargs = kwargs
+        return np.zeros(len(pairs), dtype=np.float32)
+
+
+@pytest.fixture
+def recording_cross_encoder(monkeypatch):
+    import sentence_transformers
+    created = []
+
+    def factory(*a, **kw):
+        m = _RecordingCrossEncoder(*a, **kw)
+        created.append(m)
+        return m
+
+    monkeypatch.setattr(sentence_transformers, "CrossEncoder", factory)
+    return created
+
+
+class TestBGERerankerBoundsMemory:
+    """BAAI/bge-reranker-v2-m3 declares model_max_length = 8192, and
+    CrossEncoder pads every batch to its longest member. QASPER's longest
+    paragraph is 5,303 tokens, so an unbounded batch of 32 tried to allocate
+    3.37 GiB of attention and OOM'd a 12 GB GPU. Only 52 of 20,221 QASPER
+    paragraphs (0.26%) exceed 512 tokens; p99 is 392. Bounding at 512 is
+    therefore near-lossless, and is a correctness contract, not a tuning knob:
+    without it the +rerank rung cannot run on a consumer GPU at all.
+    """
+
+    def test_sequence_length_is_bounded_at_construction(self, recording_cross_encoder):
+        BGEReranker(device="cpu")
+        (model,) = recording_cross_encoder
+        assert model.init_kwargs.get("max_length") == 512, (
+            "max_length must be pinned; inheriting the model's 8192 default "
+            "lets one long paragraph OOM the whole batch"
+        )
+
+    def test_batch_size_is_bounded_at_predict(self, recording_cross_encoder):
+        r = BGEReranker(device="cpu")
+        r.score([("q", "d")] * 4)
+        (model,) = recording_cross_encoder
+        assert model.predict_kwargs.get("batch_size") == 16
+
+    def test_bounds_are_overridable_for_a_larger_gpu(self, recording_cross_encoder):
+        r = BGEReranker(device="cpu", max_length=1024, batch_size=64)
+        r.score([("q", "d")])
+        (model,) = recording_cross_encoder
+        assert model.init_kwargs.get("max_length") == 1024
+        assert model.predict_kwargs.get("batch_size") == 64
+
+    def test_device_is_still_forwarded(self, recording_cross_encoder):
+        BGEReranker(device="cpu")
+        (model,) = recording_cross_encoder
+        assert model.init_kwargs.get("device") == "cpu"
 
 
 @pytest.mark.slow
