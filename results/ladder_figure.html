@@ -1,0 +1,233 @@
+<title>RAG retrieval ablation — QASPER & LitSearch</title>
+<style>
+  :root {
+    --bg: #f6f8f9;
+    --surface: #ffffff;
+    --ink: #142027;
+    --ink-2: #3f5560;
+    --muted: #6d838d;
+    --hair: #dde5e8;
+    --hair-2: #eef2f4;
+    /* sequential petrol ramp — the ordered ladder, light -> dark = later/better */
+    --rung-1: #a9cdd2;   /* naive   */
+    --rung-2: #4e9aa6;   /* +hybrid */
+    --rung-3: #1c5560;   /* +rerank */
+    --rung-1-ink: #35707a;
+    --accent: #1c5560;
+    --shadow: 0 1px 2px rgba(20,32,39,.06), 0 8px 28px rgba(20,32,39,.07);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0d1417;
+      --surface: #141d21;
+      --ink: #e8eff1;
+      --ink-2: #b3c4ca;
+      --muted: #7f959d;
+      --hair: #26343a;
+      --hair-2: #1c282d;
+      --rung-1: #6fb0b9;
+      --rung-2: #4e9aa6;
+      --rung-3: #86c8d1;
+      --rung-1-ink: #9fcdd4;
+      --accent: #86c8d1;
+      --shadow: 0 1px 2px rgba(0,0,0,.3), 0 10px 30px rgba(0,0,0,.35);
+    }
+  }
+  :root[data-theme="light"] {
+    --bg: #f6f8f9; --surface: #ffffff; --ink: #142027; --ink-2: #3f5560;
+    --muted: #6d838d; --hair: #dde5e8; --hair-2: #eef2f4;
+    --rung-1: #a9cdd2; --rung-2: #4e9aa6; --rung-3: #1c5560;
+    --rung-1-ink: #35707a; --accent: #1c5560;
+    --shadow: 0 1px 2px rgba(20,32,39,.06), 0 8px 28px rgba(20,32,39,.07);
+  }
+  :root[data-theme="dark"] {
+    --bg: #0d1417; --surface: #141d21; --ink: #e8eff1; --ink-2: #b3c4ca;
+    --muted: #7f959d; --hair: #26343a; --hair-2: #1c282d;
+    --rung-1: #6fb0b9; --rung-2: #4e9aa6; --rung-3: #86c8d1;
+    --rung-1-ink: #9fcdd4; --accent: #86c8d1;
+    --shadow: 0 1px 2px rgba(0,0,0,.3), 0 10px 30px rgba(0,0,0,.35);
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+  }
+  .mono {
+    font-family: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .wrap { max-width: 860px; margin: 0 auto; padding: 40px 24px 30px; }
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--hair);
+    border-radius: 14px;
+    box-shadow: var(--shadow);
+    padding: 34px 34px 28px;
+  }
+
+  .eyebrow {
+    font-size: 11.5px; letter-spacing: .14em; text-transform: uppercase;
+    color: var(--muted); font-weight: 600; margin: 0 0 12px;
+  }
+  h1 {
+    font-size: 25px; line-height: 1.22; letter-spacing: -.012em;
+    margin: 0 0 10px; font-weight: 650; text-wrap: balance; max-width: 30ch;
+  }
+  .thesis { margin: 0; color: var(--ink-2); font-size: 15.5px; max-width: 62ch; }
+  .thesis b { color: var(--ink); font-weight: 600; }
+
+  .panels {
+    display: grid; grid-template-columns: 1fr 1fr; gap: 22px;
+    margin: 30px 0 6px;
+  }
+  @media (max-width: 620px) { .panels { grid-template-columns: 1fr; } }
+
+  .panel {
+    border: 1px solid var(--hair); border-radius: 11px;
+    padding: 16px 16px 14px; background: transparent;
+  }
+  .panel-head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; margin-bottom: 4px; }
+  .panel-name { font-weight: 650; font-size: 14.5px; letter-spacing: -.01em; }
+  .panel-sub { color: var(--muted); font-size: 11.5px; }
+  .metric-tag {
+    font-size: 10.5px; letter-spacing: .1em; text-transform: uppercase;
+    color: var(--muted); font-weight: 600; margin-bottom: 14px;
+  }
+
+  .plot {
+    display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px;
+    align-items: end; height: 180px;
+    border-bottom: 2px solid var(--hair);
+    padding: 0 6px;
+  }
+  .bar-col { display: flex; flex-direction: column; align-items: center; justify-content: flex-end; height: 100%; }
+  .bar-val { font-size: 13px; font-weight: 600; margin-bottom: 6px; color: var(--ink); }
+  .bar {
+    width: 100%; max-width: 62px; border-radius: 5px 5px 0 0;
+    min-height: 3px;
+  }
+  .bar.r1 { background: var(--rung-1); }
+  .bar.r2 { background: var(--rung-2); }
+  .bar.r3 { background: var(--rung-3); }
+
+  .xlabels { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; padding: 8px 6px 0; }
+  .xlab { text-align: center; font-size: 11.5px; color: var(--ink-2); font-weight: 500; }
+  .axmax { font-size: 10.5px; color: var(--muted); margin-top: 2px; }
+
+  .table-wrap { overflow-x: auto; margin-top: 26px; }
+  table { border-collapse: collapse; width: 100%; font-size: 13.5px; }
+  caption {
+    text-align: left; font-size: 11.5px; letter-spacing: .1em; text-transform: uppercase;
+    color: var(--muted); font-weight: 600; padding-bottom: 10px;
+  }
+  th, td { padding: 8px 12px; text-align: right; white-space: nowrap; }
+  th:first-child, td:first-child { text-align: left; }
+  thead th { font-size: 11px; letter-spacing: .04em; text-transform: uppercase; color: var(--muted); font-weight: 600; border-bottom: 1px solid var(--hair); }
+  .group-row td {
+    font-size: 11px; letter-spacing: .08em; text-transform: uppercase; font-weight: 700;
+    color: var(--ink-2); padding-top: 16px; padding-bottom: 4px;
+  }
+  tbody tr.data td { border-top: 1px solid var(--hair-2); }
+  .swatch { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 8px; vertical-align: baseline; }
+  .rung-name { font-weight: 550; }
+  .best { color: var(--accent); font-weight: 700; }
+
+  .foot {
+    margin-top: 26px; padding-top: 18px; border-top: 1px solid var(--hair);
+    color: var(--muted); font-size: 12.5px; line-height: 1.6;
+  }
+  .foot b { color: var(--ink-2); font-weight: 600; }
+  .foot .method { color: var(--ink-2); }
+</style>
+
+<div class="wrap">
+  <div class="card">
+    <p class="eyebrow">Retrieval ablation · ground-truth relevance labels</p>
+    <h1>Every stage of a RAG retriever, measured one component at a time</h1>
+    <p class="thesis">
+      The same pipeline scores <b>0.238</b> on QASPER and <b>0.672</b> on LitSearch (Recall@10).
+      The retriever isn't the variable — <b>the task is</b>. Each rung below adds exactly one
+      component, so each jump is attributable to one design decision.
+    </p>
+
+    <div class="panels">
+      <!-- QASPER -->
+      <div class="panel">
+        <div class="panel-head">
+          <span class="panel-name">QASPER</span>
+          <span class="panel-sub">20,221 passages · 1,451 queries</span>
+        </div>
+        <div class="metric-tag">Recall@10</div>
+        <div class="plot" role="img" aria-label="QASPER Recall@10: naive 0.1774, plus hybrid 0.1937, plus rerank 0.2378">
+          <div class="bar-col"><span class="bar-val mono">.1774</span><div class="bar r1" style="height:59.1%"></div></div>
+          <div class="bar-col"><span class="bar-val mono">.1937</span><div class="bar r2" style="height:64.6%"></div></div>
+          <div class="bar-col"><span class="bar-val mono">.2378</span><div class="bar r3" style="height:79.3%"></div></div>
+        </div>
+        <div class="xlabels">
+          <div class="xlab">naive</div>
+          <div class="xlab">+hybrid</div>
+          <div class="xlab">+rerank</div>
+        </div>
+        <div class="axmax mono">axis 0 → 0.30 · +34% end to end</div>
+      </div>
+
+      <!-- LitSearch -->
+      <div class="panel">
+        <div class="panel-head">
+          <span class="panel-name">LitSearch</span>
+          <span class="panel-sub">64,183 papers · 597 queries</span>
+        </div>
+        <div class="metric-tag">Recall@10</div>
+        <div class="plot" role="img" aria-label="LitSearch Recall@10: naive 0.5757, plus hybrid 0.6040, plus rerank 0.6721">
+          <div class="bar-col"><span class="bar-val mono">.5757</span><div class="bar r1" style="height:71.9%"></div></div>
+          <div class="bar-col"><span class="bar-val mono">.6040</span><div class="bar r2" style="height:75.5%"></div></div>
+          <div class="bar-col"><span class="bar-val mono">.6721</span><div class="bar r3" style="height:84.0%"></div></div>
+        </div>
+        <div class="xlabels">
+          <div class="xlab">naive</div>
+          <div class="xlab">+hybrid</div>
+          <div class="xlab">+rerank</div>
+        </div>
+        <div class="axmax mono">axis 0 → 0.80 · +17% end to end</div>
+      </div>
+    </div>
+
+    <div class="table-wrap">
+      <table class="mono">
+        <caption>Full metrics</caption>
+        <thead>
+          <tr>
+            <th>Configuration</th>
+            <th>Recall@10</th>
+            <th>nDCG@10</th>
+            <th>MRR</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr class="group-row"><td colspan="4">QASPER · open-corpus scientific QA</td></tr>
+          <tr class="data"><td class="rung-name"><span class="swatch" style="background:var(--rung-1)"></span>naive · dense (BGE-M3)</td><td>0.1774</td><td>0.1286</td><td>0.1436</td></tr>
+          <tr class="data"><td class="rung-name"><span class="swatch" style="background:var(--rung-2)"></span>+ hybrid · BM25 + RRF</td><td>0.1937</td><td>0.1375</td><td>0.1511</td></tr>
+          <tr class="data"><td class="rung-name"><span class="swatch" style="background:var(--rung-3)"></span>+ rerank · cross-encoder</td><td class="best">0.2378</td><td class="best">0.1846</td><td class="best">0.2047</td></tr>
+
+          <tr class="group-row"><td colspan="4">LitSearch · literature-search retrieval</td></tr>
+          <tr class="data"><td class="rung-name"><span class="swatch" style="background:var(--rung-1)"></span>naive · dense (BGE-M3)</td><td>0.5757</td><td>0.4303</td><td>0.3897</td></tr>
+          <tr class="data"><td class="rung-name"><span class="swatch" style="background:var(--rung-2)"></span>+ hybrid · BM25 + RRF</td><td>0.6040</td><td>0.4728</td><td>0.4388</td></tr>
+          <tr class="data"><td class="rung-name"><span class="swatch" style="background:var(--rung-3)"></span>+ rerank · cross-encoder</td><td class="best">0.6721</td><td class="best">0.5440</td><td class="best">0.5087</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p class="foot">
+      <span class="method"><b>Pipeline.</b> Dense retrieval (BGE-M3) + lexical BM25, fused with Reciprocal Rank Fusion,
+      then re-ranked by a BGE cross-encoder. Both benchmarks scored against human relevance labels —
+      retrieval evaluated before any answer generation.</span><br>
+      Bars use per-panel axes (labelled) so each ablation reads clearly; the cross-benchmark gap is in the numbers, not the bar heights.
+    </p>
+  </div>
+</div>
