@@ -1,5 +1,13 @@
 """QASPER adapter. Retrieval unit = one evidence paragraph.
 
+With `enrich=True`, indexed documents carry their paper's identity --
+"{title}\\n{section}\\n{paragraph}" -- because open-corpus QASPER questions
+("what was the baseline?") are under-specified against a bare paragraph from
+an unknown paper. Enrichment changes ONLY the indexed text: doc_ids, flatten
+order, and qrels are byte-identical either way, since evidence strings in the
+dataset are verbatim RAW paragraphs. Default is off; enriched text hashes
+differently, so the embedding cache treats the two corpora as distinct.
+
 Evidence in QASPER is given as verbatim paragraph strings, so we resolve them
 back to paragraph indices by whitespace-normalised exact match. Unresolvable
 evidence is dropped and counted -- silently ignoring it would inflate
@@ -34,27 +42,42 @@ def _paragraphs_from_paper(paper: dict) -> list[str]:
     return out
 
 
+def _sectioned_paragraphs(paper: dict) -> list[tuple[str | None, str]]:
+    """(section_name, paragraph) pairs in _paragraphs_from_paper's exact order.
+
+    strict=True: section_name and paragraphs are parallel lists in the QASPER
+    schema; if they ever disagree, a silent zip truncation would shift flat
+    indices and quietly mis-align every qrel for the paper.
+    """
+    out: list[tuple[str | None, str]] = []
+    for name, section in zip(paper["full_text"]["section_name"],
+                             paper["full_text"]["paragraphs"], strict=True):
+        out.extend((name, p) for p in section)
+    return out
+
+
 class QasperCorpus(Corpus):
-    def __init__(self, papers: list[dict]) -> None:
+    def __init__(self, papers: list[dict], enrich: bool = False) -> None:
         self._papers = papers
+        self._enrich = enrich
         self.dropped_float = 0
         self.dropped_section_name = 0
         self.dropped_other = 0
         self.dropped_evidence = 0
 
     @classmethod
-    def from_raw(cls, papers: list[dict]) -> "QasperCorpus":
-        return cls(papers)
+    def from_raw(cls, papers: list[dict], enrich: bool = False) -> "QasperCorpus":
+        return cls(papers, enrich=enrich)
 
     @classmethod
-    def load(cls, split: str = "test") -> "QasperCorpus":
+    def load(cls, split: str = "test", enrich: bool = False) -> "QasperCorpus":
         from datasets import load_dataset
         # allenai/qasper on the Hub is a legacy loading-script dataset; the
         # installed `datasets` (>=3.0) dropped script execution entirely, so
         # we pin to the Hub's auto-converted parquet mirror. Same rows, same
         # schema -- verified by hand against the script output.
         ds = load_dataset("allenai/qasper", split=split, revision="refs/convert/parquet")
-        return cls([dict(row) for row in ds])
+        return cls([dict(row) for row in ds], enrich=enrich)
 
     def raw_papers(self) -> list[dict]:
         """The untouched HuggingFace rows, for vendor/qasper_eval.py to consume."""
@@ -62,9 +85,16 @@ class QasperCorpus(Corpus):
 
     def documents(self) -> Iterator[Document]:
         for paper in self._papers:
-            for i, para in enumerate(_paragraphs_from_paper(paper)):
-                yield Document(doc_id=_doc_id(paper["id"], i), text=para,
-                               meta={"paper_id": paper["id"]})
+            if self._enrich:
+                title = paper["title"]
+                for i, (section, para) in enumerate(_sectioned_paragraphs(paper)):
+                    head = f"{title}\n{section}\n" if section else f"{title}\n"
+                    yield Document(doc_id=_doc_id(paper["id"], i), text=head + para,
+                                   meta={"paper_id": paper["id"]})
+            else:
+                for i, para in enumerate(_paragraphs_from_paper(paper)):
+                    yield Document(doc_id=_doc_id(paper["id"], i), text=para,
+                                   meta={"paper_id": paper["id"]})
 
     def queries(self) -> Iterator[Query]:
         for paper in self._papers:

@@ -26,7 +26,7 @@ _BGE_M3_MODEL_ID = "BAAI/bge-m3"
 
 
 def run(corpus, encoder: Encoder, k: int = 10, limit: int = 0, with_hyde: bool = False,
-        device: str = "cuda") -> str:
+        device: str = "cuda", rerank_depth: int = 50) -> str:
     docs = list(corpus.documents())
     texts = {d.doc_id: d.text for d in docs}
     qrels = corpus.qrels()
@@ -80,7 +80,7 @@ def run(corpus, encoder: Encoder, k: int = 10, limit: int = 0, with_hyde: bool =
             if cfg.rerank:
                 # rerank against the ORIGINAL query, not the HyDE expansion:
                 # the cross-encoder must judge relevance to what the user asked.
-                hits = rerank(q.text, hits[:50], texts, reranker, k=k)
+                hits = rerank(q.text, hits[:rerank_depth], texts, reranker, k=k)
             ids = [h.doc_id for h in hits[:k]]
             g = qrels.get(q.qid, {})
             per_query.append((
@@ -104,11 +104,20 @@ if __name__ == "__main__":
     ap.add_argument("--dataset", choices=["qasper", "litsearch"], required=True)
     ap.add_argument("--limit", type=int, default=0, help="subset queries for a smoke run")
     ap.add_argument("--with-hyde", action="store_true", help="enable the +hyde rung (costs API calls)")
+    ap.add_argument("--enrich", action="store_true",
+                    help="QASPER only: index '{title}\\n{section}\\n{paragraph}' instead of "
+                         "the bare paragraph (misses the embedding cache once)")
+    ap.add_argument("--rerank-depth", type=int, default=50,
+                    help="fused candidates handed to the cross-encoder; fused Recall@depth "
+                         "is the rerank rung's ceiling (see scripts/diagnose_ceiling.py)")
     ap.add_argument("--device", default="cuda", choices=["cuda", "cpu"],
                     help="cpu avoids contending for a GPU that other jobs are using")
     ap.add_argument("--no-cache", action="store_true",
                     help="bypass the persistent embedding cache and always re-encode")
     a = ap.parse_args()
+
+    if a.enrich and a.dataset != "qasper":
+        raise SystemExit("--enrich is QASPER-only: LitSearch already indexes title+abstract.")
 
     if a.no_cache:
         encoder: Encoder = BGEM3Encoder(device=a.device)
@@ -126,9 +135,15 @@ if __name__ == "__main__":
         cache_root = pathlib.Path(amrag_data) / "embeddings"
         encoder = CachedEncoder(BGEM3Encoder(device=a.device), _BGE_M3_MODEL_ID, cache_root)
 
-    corpus = QasperCorpus.load("test") if a.dataset == "qasper" else LitSearchCorpus.load()
-    md = run(corpus, encoder, limit=a.limit, with_hyde=a.with_hyde, device=a.device)
-    suffix = "_hyde" if a.with_hyde else ""
+    corpus = (QasperCorpus.load("test", enrich=a.enrich) if a.dataset == "qasper"
+              else LitSearchCorpus.load())
+    md = run(corpus, encoder, limit=a.limit, with_hyde=a.with_hyde, device=a.device,
+             rerank_depth=a.rerank_depth)
+    # Every non-default knob lands in the filename: a results table whose
+    # configuration cannot be read off its name is how numbers get misquoted.
+    suffix = ("_hyde" if a.with_hyde else "") \
+        + ("_enriched" if a.enrich else "") \
+        + (f"_rd{a.rerank_depth}" if a.rerank_depth != 50 else "")
     out = pathlib.Path(f"results/m1_{a.dataset}{suffix}.md")
     out.parent.mkdir(exist_ok=True)
     out.write_text(md)

@@ -175,6 +175,54 @@ def test_raw_papers_returns_same_list_object_as_constructed_with():
     assert c.raw_papers() is papers
 
 
+ENRICHABLE_PAPER = {
+    "id": "p2",
+    "title": "A Study of Alphas",
+    "full_text": {"section_name": [None, "Results"],
+                  "paragraphs": [["Lead para."], ["Alpha beta.", "Gamma delta."]]},
+    "qas": {
+        "question": ["What is alpha?"],
+        "question_id": ["q1"],
+        "answers": [_ans("Alpha beta.")],
+    },
+}
+
+
+def test_enriched_documents_carry_title_and_section():
+    c = QasperCorpus.from_raw([ENRICHABLE_PAPER], enrich=True)
+    docs = list(c.documents())
+    assert docs[1].text == "A Study of Alphas\nResults\nAlpha beta."
+    assert docs[2].text == "A Study of Alphas\nResults\nGamma delta."
+
+
+def test_enriched_none_section_omits_the_section_line():
+    c = QasperCorpus.from_raw([ENRICHABLE_PAPER], enrich=True)
+    docs = list(c.documents())
+    assert docs[0].text == "A Study of Alphas\nLead para."
+
+
+def test_enrichment_changes_neither_doc_ids_nor_order():
+    raw = [d.doc_id for d in QasperCorpus.from_raw([ENRICHABLE_PAPER]).documents()]
+    enriched = [d.doc_id for d in
+                QasperCorpus.from_raw([ENRICHABLE_PAPER], enrich=True).documents()]
+    assert raw == enriched == ["p2::0", "p2::1", "p2::2"]
+
+
+def test_enrichment_does_not_change_qrels():
+    # Evidence is given as RAW paragraph text; qrels must resolve it whether
+    # or not the indexed documents carry the title/section prefix.
+    assert (QasperCorpus.from_raw([ENRICHABLE_PAPER], enrich=True).qrels()
+            == QasperCorpus.from_raw([ENRICHABLE_PAPER]).qrels()
+            == {"q1": {"p2::1": 1}})
+
+
+def test_default_is_unenriched():
+    # RAW_PAPER has no "title" key, so this also proves the default path
+    # never reaches for enrichment fields.
+    docs = list(QasperCorpus.from_raw([RAW_PAPER]).documents())
+    assert docs[0].text == "Alpha beta."
+
+
 def test_qrels_counters_are_idempotent_across_calls():
     """Counters must describe the corpus, not the call history.
 
