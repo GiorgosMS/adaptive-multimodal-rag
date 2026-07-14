@@ -4,9 +4,10 @@
 
 The M1 ladder (naive → +hybrid → +rerank) is measured and published:
 QASPER R@10 0.238, LitSearch R@10 0.672 / nDCG@10 0.544 — the latter within
-~2 points of GritLM-7B on the LitSearch authors' own nDCG@10 numbers. The user
-asked for the improvements I judged necessary. This doc records what gets
-built now, what is deliberately deferred, and why.
+~2 points of GritLM-7B on the LitSearch authors' own nDCG@10 numbers. This
+next iteration goes after the improvements judged necessary from that
+baseline. This doc records what gets built now, what is deliberately
+deferred, and why.
 
 ## Principle: diagnose before optimizing
 

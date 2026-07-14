@@ -71,8 +71,8 @@ Repo + full metrics happy to share.
 ## Notes
 
 - Attach the results figure (5-rung QASPER ladder + SOTA comparison panel):
-  https://claude.ai/code/artifact/2f4d7ea3-9705-4ef8-9b83-dbc1f382bdf9
-  (source: results/ladder_figure.html — share from the page's menu, or screenshot the card)
+  render results/ladder_figure.html and export it as a PNG/screenshot for the post
+  attachment — LinkedIn wants an image, not a link.
 - Ladder numbers are exact, from:
   results/m1_qasper.md (raw rungs 1-3), results/m1_qasper_enriched.md (rung 4),
   results/m1_qasper_enriched_rd100.md (rung 5), results/m1_litsearch.md,

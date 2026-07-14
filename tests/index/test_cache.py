@@ -1,8 +1,8 @@
-"""Tests for CachedEncoder (Task 17).
+"""Tests for CachedEncoder.
 
 Fakes + tmp_path only: no real model weights, no network, nothing written
-outside pytest's tmp_path. See .superpowers/sdd/task17-brief.md for the six
-required properties this file is organised around.
+outside pytest's tmp_path. Organised around six required properties -- see
+the "Property N" section banners below.
 """
 import hashlib
 import os
