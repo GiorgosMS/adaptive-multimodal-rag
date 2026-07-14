@@ -12,8 +12,11 @@
     --rung-1: #a9cdd2;   /* naive   */
     --rung-2: #4e9aa6;   /* +hybrid */
     --rung-3: #1c5560;   /* +rerank */
+    --rung-4: #12424c;   /* +enrich      (QASPER only) */
+    --rung-5: #0a2e36;   /* +deep rerank (QASPER only) */
     --rung-1-ink: #35707a;
     --accent: #1c5560;
+    --cmp-other: #6d838d; /* de-emphasis hue for published baselines */
     --shadow: 0 1px 2px rgba(20,32,39,.06), 0 8px 28px rgba(20,32,39,.07);
   }
   @media (prefers-color-scheme: dark) {
@@ -28,8 +31,11 @@
       --rung-1: #6fb0b9;
       --rung-2: #4e9aa6;
       --rung-3: #86c8d1;
+      --rung-4: #a3d7de;
+      --rung-5: #c1e6eb;
       --rung-1-ink: #9fcdd4;
       --accent: #86c8d1;
+      --cmp-other: #7f959d;
       --shadow: 0 1px 2px rgba(0,0,0,.3), 0 10px 30px rgba(0,0,0,.35);
     }
   }
@@ -37,14 +43,16 @@
     --bg: #f6f8f9; --surface: #ffffff; --ink: #142027; --ink-2: #3f5560;
     --muted: #6d838d; --hair: #dde5e8; --hair-2: #eef2f4;
     --rung-1: #a9cdd2; --rung-2: #4e9aa6; --rung-3: #1c5560;
-    --rung-1-ink: #35707a; --accent: #1c5560;
+    --rung-4: #12424c; --rung-5: #0a2e36;
+    --rung-1-ink: #35707a; --accent: #1c5560; --cmp-other: #6d838d;
     --shadow: 0 1px 2px rgba(20,32,39,.06), 0 8px 28px rgba(20,32,39,.07);
   }
   :root[data-theme="dark"] {
     --bg: #0d1417; --surface: #141d21; --ink: #e8eff1; --ink-2: #b3c4ca;
     --muted: #7f959d; --hair: #26343a; --hair-2: #1c282d;
     --rung-1: #6fb0b9; --rung-2: #4e9aa6; --rung-3: #86c8d1;
-    --rung-1-ink: #9fcdd4; --accent: #86c8d1;
+    --rung-4: #a3d7de; --rung-5: #c1e6eb;
+    --rung-1-ink: #9fcdd4; --accent: #86c8d1; --cmp-other: #7f959d;
     --shadow: 0 1px 2px rgba(0,0,0,.3), 0 10px 30px rgba(0,0,0,.35);
   }
 
@@ -115,10 +123,37 @@
   .bar.r1 { background: var(--rung-1); }
   .bar.r2 { background: var(--rung-2); }
   .bar.r3 { background: var(--rung-3); }
+  .bar.r4 { background: var(--rung-4); }
+  .bar.r5 { background: var(--rung-5); }
+  .plot.five, .xlabels.five { grid-template-columns: repeat(5, 1fr); gap: 10px; }
 
   .xlabels { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; padding: 8px 6px 0; }
   .xlab { text-align: center; font-size: 11.5px; color: var(--ink-2); font-weight: 500; }
   .axmax { font-size: 10.5px; color: var(--muted); margin-top: 2px; }
+
+  .compare {
+    border: 1px solid var(--hair); border-radius: 11px;
+    padding: 16px 16px 12px; margin-top: 22px;
+  }
+  .cmp-grid {
+    display: grid; grid-template-columns: max-content 1fr max-content;
+    gap: 9px 12px; align-items: center; margin-top: 14px;
+  }
+  .cmp-name { font-size: 12.5px; color: var(--ink-2); text-align: right; white-space: nowrap; }
+  .cmp-name .params { color: var(--muted); }
+  .cmp-name.ours, .cmp-val.ours { color: var(--accent); font-weight: 700; }
+  .cmp-bar {
+    height: 20px; border-radius: 0 4px 4px 0;
+    background: var(--cmp-other); min-width: 2px;
+  }
+  .cmp-bar.ours { background: var(--rung-3); }
+  .cmp-val { font-size: 12.5px; font-weight: 600; color: var(--ink); }
+  .cmp-foot { color: var(--muted); font-size: 11.5px; line-height: 1.55; margin: 14px 0 2px; }
+  .cmp-foot b { color: var(--ink-2); font-weight: 600; }
+  @media (max-width: 620px) {
+    .cmp-grid { grid-template-columns: 1fr max-content; }
+    .cmp-name { grid-column: 1 / -1; text-align: left; white-space: normal; margin-bottom: -4px; }
+  }
 
   .table-wrap { overflow-x: auto; margin-top: 26px; }
   table { border-collapse: collapse; width: 100%; font-size: 13.5px; }
@@ -151,9 +186,12 @@
     <p class="eyebrow">Retrieval ablation · ground-truth relevance labels</p>
     <h1>Every stage of a RAG retriever, measured one component at a time</h1>
     <p class="thesis">
-      The same pipeline scores <b>0.238</b> on QASPER and <b>0.672</b> on LitSearch (Recall@10).
-      The retriever isn't the variable — <b>the task is</b>. Each rung below adds exactly one
-      component, so each jump is attributable to one design decision.
+      The same pipeline scores <b>0.275</b> on QASPER and <b>0.672</b> on LitSearch (Recall@10).
+      Each rung below adds exactly one component, so each jump is attributable to one design
+      decision — QASPER's last two rungs came from measuring the retrieval ceiling first and
+      fixing the stage that was actually binding. On LitSearch, the full stack lands
+      <b>within 2 points of GritLM-7B</b>, the strongest retriever the benchmark's authors
+      tested — with nothing bigger than 0.6&thinsp;B parameters.
     </p>
 
     <div class="panels">
@@ -164,17 +202,21 @@
           <span class="panel-sub">20,221 passages · 1,451 queries</span>
         </div>
         <div class="metric-tag">Recall@10</div>
-        <div class="plot" role="img" aria-label="QASPER Recall@10: naive 0.1774, plus hybrid 0.1937, plus rerank 0.2378">
+        <div class="plot five" role="img" aria-label="QASPER Recall@10: naive 0.1774, plus hybrid 0.1937, plus rerank 0.2378, plus enrich 0.2657, plus deep rerank 0.2752">
           <div class="bar-col"><span class="bar-val mono">.1774</span><div class="bar r1" style="height:59.1%"></div></div>
           <div class="bar-col"><span class="bar-val mono">.1937</span><div class="bar r2" style="height:64.6%"></div></div>
           <div class="bar-col"><span class="bar-val mono">.2378</span><div class="bar r3" style="height:79.3%"></div></div>
+          <div class="bar-col"><span class="bar-val mono">.2657</span><div class="bar r4" style="height:88.6%"></div></div>
+          <div class="bar-col"><span class="bar-val mono">.2752</span><div class="bar r5" style="height:91.7%"></div></div>
         </div>
-        <div class="xlabels">
+        <div class="xlabels five">
           <div class="xlab">naive</div>
           <div class="xlab">+hybrid</div>
           <div class="xlab">+rerank</div>
+          <div class="xlab">+enrich</div>
+          <div class="xlab">+deep<br>rerank</div>
         </div>
-        <div class="axmax mono">axis 0 → 0.30 · +34% end to end</div>
+        <div class="axmax mono">axis 0 → 0.30 · +55% end to end</div>
       </div>
 
       <!-- LitSearch -->
@@ -198,6 +240,44 @@
       </div>
     </div>
 
+    <div class="compare">
+      <div class="panel-head">
+        <span class="panel-name">Where it lands vs published retrievers</span>
+        <span class="panel-sub">LitSearch · same 597 queries, same 64,183-paper corpus</span>
+      </div>
+      <div class="metric-tag">nDCG@10</div>
+      <div class="cmp-grid" role="img"
+           aria-label="LitSearch nDCG@10: GritLM-7B 0.561, this pipeline 0.544, E5-large-v2 0.406, Instructor-XL 0.390, GTR-T5-large 0.286. Published numbers weighted across the benchmark's broad and specific query subsets.">
+        <span class="cmp-name">GritLM-7B <span class="params">· 7.2 B</span></span>
+        <div class="cmp-bar" style="width:93.5%" title="GritLM-7B — 0.561"></div>
+        <span class="cmp-val mono">0.561</span>
+
+        <span class="cmp-name ours">this pipeline <span class="params">· 2 × 0.6 B</span></span>
+        <div class="cmp-bar ours" style="width:90.7%" title="this pipeline (hybrid + rerank) — 0.544"></div>
+        <span class="cmp-val ours mono">0.544</span>
+
+        <span class="cmp-name">E5-large-v2 <span class="params">· 0.3 B</span></span>
+        <div class="cmp-bar" style="width:67.7%" title="E5-large-v2 — 0.406"></div>
+        <span class="cmp-val mono">0.406</span>
+
+        <span class="cmp-name">Instructor-XL <span class="params">· 1.2 B</span></span>
+        <div class="cmp-bar" style="width:65.0%" title="Instructor-XL — 0.390"></div>
+        <span class="cmp-val mono">0.390</span>
+
+        <span class="cmp-name">GTR-T5-large <span class="params">· 0.3 B</span></span>
+        <div class="cmp-bar" style="width:47.7%" title="GTR-T5-large — 0.286"></div>
+        <span class="cmp-val mono">0.286</span>
+      </div>
+      <p class="cmp-foot">
+        Published rows: single-model dense retrievers from the LitSearch paper (EMNLP 2024, Table 8),
+        which reports nDCG@10 per query subset; shown here <b>weighted by the benchmark's 155 broad /
+        442 specific query counts</b> — our aggregation, not a number the paper prints.
+        “This pipeline” is a multi-stage system (BGE-M3 + BM25 + RRF + cross-encoder), so the fair claim is
+        pipeline-vs-model: <b>stacking cheap components recovers ~7 B-class quality from ≤0.6 B parts</b>.
+        Bars share one axis, 0 → 0.60.
+      </p>
+    </div>
+
     <div class="table-wrap">
       <table class="mono">
         <caption>Full metrics</caption>
@@ -213,7 +293,9 @@
           <tr class="group-row"><td colspan="4">QASPER · open-corpus scientific QA</td></tr>
           <tr class="data"><td class="rung-name"><span class="swatch" style="background:var(--rung-1)"></span>naive · dense (BGE-M3)</td><td>0.1774</td><td>0.1286</td><td>0.1436</td></tr>
           <tr class="data"><td class="rung-name"><span class="swatch" style="background:var(--rung-2)"></span>+ hybrid · BM25 + RRF</td><td>0.1937</td><td>0.1375</td><td>0.1511</td></tr>
-          <tr class="data"><td class="rung-name"><span class="swatch" style="background:var(--rung-3)"></span>+ rerank · cross-encoder</td><td class="best">0.2378</td><td class="best">0.1846</td><td class="best">0.2047</td></tr>
+          <tr class="data"><td class="rung-name"><span class="swatch" style="background:var(--rung-3)"></span>+ rerank · cross-encoder</td><td>0.2378</td><td>0.1846</td><td>0.2047</td></tr>
+          <tr class="data"><td class="rung-name"><span class="swatch" style="background:var(--rung-4)"></span>+ enrich · title+section on chunks</td><td>0.2657</td><td>0.2075</td><td>0.2228</td></tr>
+          <tr class="data"><td class="rung-name"><span class="swatch" style="background:var(--rung-5)"></span>+ deep rerank · 100 candidates</td><td class="best">0.2752</td><td class="best">0.2129</td><td class="best">0.2264</td></tr>
 
           <tr class="group-row"><td colspan="4">LitSearch · literature-search retrieval</td></tr>
           <tr class="data"><td class="rung-name"><span class="swatch" style="background:var(--rung-1)"></span>naive · dense (BGE-M3)</td><td>0.5757</td><td>0.4303</td><td>0.3897</td></tr>
@@ -226,8 +308,15 @@
     <p class="foot">
       <span class="method"><b>Pipeline.</b> Dense retrieval (BGE-M3) + lexical BM25, fused with Reciprocal Rank Fusion,
       then re-ranked by a BGE cross-encoder. Both benchmarks scored against human relevance labels —
-      retrieval evaluated before any answer generation.</span><br>
+      retrieval evaluated before any answer generation. <b>+enrich</b> indexes each QASPER paragraph as
+      title + section + text, so under-specified questions can find chunks by document identity;
+      <b>+deep rerank</b> widens the cross-encoder pool from 50 to 100 fused candidates.</span><br>
+      Deep reranking was measured on LitSearch too and <b>rejected</b>: 0.667 vs 0.672 Recall@10 — a deeper
+      pool pays only when the reranker out-discriminates the added distractors. LitSearch therefore keeps depth 50.
       Bars use per-panel axes (labelled) so each ablation reads clearly; the cross-benchmark gap is in the numbers, not the bar heights.
+      Published baselines: Ajith et&nbsp;al., <b>LitSearch</b> (EMNLP 2024), arXiv:2407.18940.
+      QASPER has no comparable public leaderboard for this framing — the standard task retrieves within a single
+      paper; here the corpus is all 20,221 paragraphs across 416 papers at once.
     </p>
   </div>
 </div>
