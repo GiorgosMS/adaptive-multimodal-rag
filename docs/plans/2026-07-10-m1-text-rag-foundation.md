@@ -23,19 +23,24 @@ Copied verbatim from `docs/specs/2026-07-10-multimodal-rag-design.md`:
 
 Measured 2026-07-10. **`/` (home) has only 35 GB free; the project drive has 407 GB.** Everything cacheable must live on the project drive.
 
+**Single-folder rule (user requirement):** every downloaded byte — HF models, HF datasets, torch
+weights, derived artefacts — lands under `<repo>/_cache/`. `rm -rf _cache` reclaims all of it and
+leaves a working repo. `scripts/disk.sh` reports what is in there. `_cache/` is git-ignored; nothing
+else in the tree grows.
+
 Verified: the drive is `ntfs3` and **supports symlinks and hardlinks**, so the HuggingFace cache works there unmodified. Do *not* set `HF_HUB_DISABLE_SYMLINKS`.
 
 | Item | Size | Note |
 |---|---|---|
 | `Qwen/Qwen2.5-VL-3B-Instruct` (M2 base) | 7.51 GB | not needed in M1 |
 | `vidore/colqwen2.5-v0.2` adapter (M2) | 0.26 GB | not needed in M1 |
-| `BAAI/bge-m3` | **2.29 GB** | repo is 4.57 GB — it ships a duplicate ONNX export. Use `allow_patterns` to skip it. |
+| `BAAI/bge-m3` | ~~2.29 GB~~ → **4.3 GB MEASURED** | ⚠️ `sentence-transformers` pulls **both** `model.safetensors` (2.2 GB) *and* the legacy `pytorch_model.bin` (2.2 GB) — the same weights twice. (Not an ONNX export, as earlier research claimed.) To avoid, pre-fetch with `snapshot_download(..., ignore_patterns=["pytorch_model.bin", "onnx/*"])` and load from the local dir. Not worth doing at 390 GB free. |
 | `BAAI/bge-reranker-v2-m3` | 2.29 GB | |
 | `allenai/qasper` | 14.7 MB dl → 36.8 MB arrow | |
 | `princeton-nlp/LitSearch` `query` | 49 KB | |
 | `princeton-nlp/LitSearch` `corpus_clean` | 1.26 GB | title+abstract. **This is the M1 corpus.** |
 | `princeton-nlp/LitSearch` `corpus_s2orc` | 1.50 GB | full text. **Not needed in M1.** |
-| **M1 total** | **≈ 6.0 GB** | |
+| **M1 total** | ~~≈ 6.0 GB~~ → **≈ 8.3 GB** | Revised after measurement. `_cache/` measured at **11 GB** after Task 7 (includes pip wheel cache ~2.8 GB). |
 | ViDoRe v2 (M2) | ≈ 2.41 GB | |
 | `google/spiqa` **test splits only** | **443 MB** | ⚠ **full repo is 34.86 GB** — `train_val Images.zip` alone is 32.02 GB. Always use `allow_patterns`. |
 | M3DocVQA PDFs (M3) | **unpublished** | Bloomberg ships a downloader script, not a sized artifact. Budget ~10–20 GB, verify empirically. |
@@ -80,7 +85,7 @@ Rationale: `index/` owns *how things are stored and searched*; `retrieve/` owns 
 ### Task 1: Project scaffold and environment
 
 **Files:**
-- Create: `pyproject.toml`, `src/amrag/__init__.py`, `tests/test_smoke.py`, `.env.example`, `scripts/env.sh`
+- Create: `pyproject.toml`, `src/amrag/__init__.py`, `tests/test_smoke.py`, `.env.example`, `scripts/env.sh`, `scripts/disk.sh`
 
 **Interfaces:**
 - Consumes: nothing.
@@ -134,10 +139,41 @@ __version__ = "0.1.0"
 `scripts/env.sh` — **this is the file that keeps `/` from filling up:**
 
 ```bash
-# source this before any work. / has only 35GB free; the project drive has 407GB.
-export HF_HOME="/media/giorgos-miltos-sandalis/8C645C0B645BF684/hf-cache"
-export AMRAG_DATA="/media/giorgos-miltos-sandalis/8C645C0B645BF684/amrag-data"
-mkdir -p "$HF_HOME" "$AMRAG_DATA"
+#!/usr/bin/env bash
+# Source before any work.  /  has ~35 GB free; the project drive has ~407 GB.
+#
+# EVERY downloaded byte lands under a single folder: $AMRAG_CACHE.
+#   rm -rf "$AMRAG_CACHE"     <- reclaims all of it; the repo still works.
+# Nothing else in the tree grows. Do not let any tool default to ~/.cache.
+
+PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+export AMRAG_CACHE="$PROJECT_ROOT/_cache"
+export HF_HOME="$AMRAG_CACHE/huggingface"       # models + datasets
+export TORCH_HOME="$AMRAG_CACHE/torch"
+export PIP_CACHE_DIR="$AMRAG_CACHE/pip"         # torch wheels are GBs
+export AMRAG_DATA="$AMRAG_CACHE/data"           # our own derived artefacts
+
+mkdir -p "$HF_HOME" "$TORCH_HOME" "$PIP_CACHE_DIR" "$AMRAG_DATA" || {
+  echo "FATAL: cannot create $AMRAG_CACHE" >&2; return 1 2>/dev/null || exit 1; }
+
+# The project path contains a space ("Personal Projects"). Fail loudly now
+# rather than inside a subprocess that forgot to quote.
+[ -w "$HF_HOME" ] || { echo "FATAL: $HF_HOME not writable" >&2; return 1 2>/dev/null || exit 1; }
+
+echo "AMRAG_CACHE=$AMRAG_CACHE"
+```
+
+`scripts/disk.sh` — so the cache is never a mystery:
+
+```bash
+#!/usr/bin/env bash
+source "$(dirname "${BASH_SOURCE[0]}")/env.sh" >/dev/null
+echo "Everything below is safe to delete (rm -rf \"\$AMRAG_CACHE\"):"
+du -sh "$AMRAG_CACHE"/* 2>/dev/null | sort -h
+echo "---"
+du -sh "$AMRAG_CACHE"
+df -h --output=target,avail "$AMRAG_CACHE" | tail -1
 ```
 
 ```bash
@@ -167,9 +203,20 @@ Expected: PASS
 
 ```bash
 git config core.filemode false
-printf '%s\n' '.venv/' 'hf-cache/' 'amrag-data/' '.env' 'results/' >> .gitignore
+printf '%s\n' '.venv/' '_cache/' '.env' >> .gitignore    # results/ IS committed
+chmod +x scripts/env.sh scripts/disk.sh
 git add pyproject.toml src tests scripts .env.example .gitignore
-git commit -m "feat: project scaffold, env pinning cache to project drive"
+git commit -m "feat: project scaffold; all bulk data confined to _cache/"
+```
+
+Sanity-check the confinement before moving on — nothing may land in `$HOME`:
+
+```bash
+source scripts/env.sh
+python -c "import huggingface_hub.constants as c; print(c.HF_HUB_CACHE)"
+# must print a path under .../adaptive-multimodal-rag/_cache/huggingface
+# NB: `huggingface_hub.constants` must be imported directly -- on hf_hub >=1.23
+# there is no lazy top-level `constants` attribute, so `h.constants` AttributeErrors.
 ```
 
 ---
@@ -187,13 +234,14 @@ git commit -m "feat: project scaffold, env pinning cache to project drive"
 
 ```python
 # tests/test_types.py
+import dataclasses
 import pytest
 from amrag.types import Hit, Span
 
 def test_hit_is_frozen():
     h = Hit(doc_id="d1", score=1.0, granularity="passage", modality="text")
-    with pytest.raises(Exception):
-        h.score = 2.0
+    with pytest.raises(dataclasses.FrozenInstanceError):   # not bare Exception:
+        h.score = 2.0                                      # that would pass on a typo
 
 def test_hit_rejects_unknown_granularity():
     with pytest.raises(ValueError):
@@ -611,7 +659,13 @@ Dropped-evidence rate on test split: <paste Step 5 output>"
 
 **Interfaces:**
 - Consumes: `Document`, `Query`, `Corpus` from Task 4.
-- Produces: `LitSearchCorpus`, same three methods. Retrieval unit = **one paper** (`corpus_clean`: title + abstract). qrels come from the `citations` field.
+- Produces: `LitSearchCorpus`, same three methods. Retrieval unit = **one paper** (`corpus_clean`: title + abstract). qrels come from the query row's **`corpusids`** field.
+
+> ⚠️ **Verified schema trap (2026-07-10).** The `query` config's relevance field is **`corpusids`**, *not* `citations`:
+> `['query_set', 'query', 'specificity', 'quality', 'corpusids']` — 597 rows.
+> The `corpus_clean` config **also has a field named `citations`** — but it means *that paper's own outgoing bibliography*
+> (`['corpusid','title','abstract','citations','full_paper']`, 64,183 rows). Reading qrels from that field would
+> yield plausible, entirely fictitious relevance labels. **Use `corpusids`, from the query rows, and nothing else.**
 
 - [ ] **Step 1: Write the failing test**
 
@@ -621,7 +675,7 @@ from amrag.corpus.base import Document, Query
 from amrag.corpus.litsearch import LitSearchCorpus
 
 RAW_CORPUS = [{"corpusid": 101, "title": "Deep Nets", "abstract": "We study nets."}]
-RAW_QUERIES = [{"query_set": "s", "query": "papers on nets?", "citations": [101], "specificity": 0}]
+RAW_QUERIES = [{"query_set": "s", "query": "papers on nets?", "corpusids": [101], "specificity": 0}]
 
 def test_document_concatenates_title_and_abstract():
     c = LitSearchCorpus.from_raw(RAW_CORPUS, RAW_QUERIES)
@@ -638,7 +692,7 @@ def test_qrels_come_from_citations():
     assert c.qrels() == {"q0": {"101": 1}}
 
 def test_citation_to_missing_paper_is_dropped():
-    c = LitSearchCorpus.from_raw(RAW_CORPUS, [{**RAW_QUERIES[0], "citations": [101, 999]}])
+    c = LitSearchCorpus.from_raw(RAW_CORPUS, [{**RAW_QUERIES[0], "corpusids": [101, 999]}])
     assert c.qrels() == {"q0": {"101": 1}}
     assert c.dropped_citations == 1
 ```
@@ -692,16 +746,24 @@ class LitSearchCorpus(Corpus):
             yield Query(qid=f"q{i}", text=row["query"])
 
     def qrels(self) -> dict[str, dict[str, int]]:
+        """Relevance comes from the query row's `corpusids`.
+
+        NOT from the corpus row's `citations` field, which exists but means
+        that paper's own outgoing bibliography. Counters accumulate in a local
+        and are assigned once, so repeated calls report identical numbers.
+        """
         known = {str(r["corpusid"]) for r in self._corpus}
         out: dict[str, dict[str, int]] = {}
+        dropped = 0
         for i, row in enumerate(self._queries):
             rels: dict[str, int] = {}
-            for cid in row["citations"]:
+            for cid in row["corpusids"]:
                 if str(cid) in known:
                     rels[str(cid)] = 1
                 else:
-                    self.dropped_citations += 1
+                    dropped += 1
             out[f"q{i}"] = rels
+        self.dropped_citations = dropped
         return out
 ```
 
@@ -1449,6 +1511,23 @@ curl -fsSL -o vendor/qasper_eval.py \
 head -30 vendor/qasper_eval.py    # confirm it is the scorer, not an HTML 404 page
 ```
 
+**Verified 2026-07-10 (HTTP 200).** The file exposes exactly the symbols we need:
+
+| Symbol | What it is |
+|---|---|
+| `normalize_answer(s)` | SQuAD-style normalisation: lowercase, strip punctuation/articles/extra whitespace |
+| `token_f1_score(prediction, ground_truth)` | **Answer-F1** (token-level). Returns integer `0` — not `0.0` — when there is no overlap |
+| `paragraph_f1_score(prediction, ground_truth)` | **Evidence-F1** (set-F1 over evidence paragraph strings) |
+
+> ⚠️ **Use `paragraph_f1_score`. Do not hand-roll set-F1.** Upstream contains a special case that a
+> naive implementation gets wrong:
+> ```python
+> if not ground_truth and not prediction:
+>     return 1.0     # unanswerable question + empty prediction == perfect
+> ```
+> A hand-rolled version returning `0.0` there would silently penalise correct abstention — on QASPER's
+> test split, 142 queries have no resolvable evidence, so this is not a hypothetical edge case.
+
 If the URL 404s, locate the current path in `allenai/qasper-led-baseline` and record the exact commit SHA in the commit message. **Never hand-write a substitute.**
 
 - [ ] **Step 2: Write the failing test**
@@ -1456,7 +1535,7 @@ If the URL 404s, locate the current path in `allenai/qasper-led-baseline` and re
 ```python
 # tests/eval/test_answer.py
 import pytest
-from amrag.eval.answer import score_answers
+from amrag.eval.answer import build_gold, score_answers
 
 GOLD = {
     "q1": {"answers": ["backpropagation"], "evidence": ["Nets are trained with backprop."]},
@@ -1550,57 +1629,68 @@ Expected: FAIL — `TypeError: score_answers() got an unexpected keyword argumen
 
 Now replace `src/amrag/eval/answer.py` with:
 
+> ⚠️ **Do not write a scoring loop. Call upstream's `evaluate()`.**
+> Reading `vendor/qasper_eval.py` reveals that a hand-written adapter diverges from the official
+> protocol in four ways, each of which silently breaks comparability with the published numbers:
+>
+> | | Official `evaluate()` | A naive adapter |
+> |---|---|---|
+> | Gold shape | **per-annotator list** of `{answer, evidence, type}` | one flattened union |
+> | Evidence-F1 | `max(paragraph_f1_score(pred, ref["evidence"]) for ref in refs)` | one call on the union — **systematically under-reports** whenever annotators disagree |
+> | Unanswerable gold | the literal string `"Unanswerable"` | `""` — so correct abstention scores Answer-F1 **0**, not 1 |
+> | Answer priority | `extractive_spans` (`", ".join`) → `free_form_answer` → `yes_no` (`"Yes"`/`"No"`) | some other order |
+>
+> Upstream also has a `text_evidence_only` flag that filters `"FLOAT SELECTED"` evidence — the
+> official handling of the 459 figure/table annotations measured in Task 4.
+>
+> Our job is **shape translation only**: HuggingFace serves `qas` columnar (dict-of-lists);
+> upstream expects it row-wise (list-of-dicts).
+
 ```python
 # src/amrag/eval/answer.py
-"""Adapter onto the vendored official QASPER evaluator.
+"""Thin shape-adapter onto the vendored official QASPER evaluator.
 
-Answer-F1 comes from vendor/qasper_eval.py, downloaded unmodified from
-allenai/qasper-led-baseline. Reimplementing it would silently break
-comparability with the paper.
+We do NOT score anything ourselves. `vendor/qasper_eval.py` is byte-identical to
+allenai/qasper-led-baseline, and its `get_answers_and_evidence()` + `evaluate()`
+define the metrics the paper reports. We only translate HuggingFace's columnar
+`qas` layout into the row-wise layout upstream expects.
 
-Evidence-F1 is set-F1 over evidence *paragraph strings* -- QASPER's evidence
-annotations are verbatim paragraphs, so set membership is exact-match, not
-token overlap. (Confirm against the vendored file: if it exposes an evidence
-scorer, delete ours and call theirs.)
+Every scoring subtlety -- max-over-annotators, the "Unanswerable" gold string,
+the extractive/abstractive/boolean priority, the empty-gold-empty-prediction
+special case -- lives upstream and must stay there.
 """
-from vendor.qasper_eval import token_f1_score
+from vendor.qasper_eval import evaluate, get_answers_and_evidence
 
 
-def _set_f1(predicted: list[str], gold: list[str]) -> float:
-    p, g = set(predicted), set(gold)
-    if not p or not g:
-        return 0.0
-    tp = len(p & g)
-    if tp == 0:
-        return 0.0
-    precision, recall = tp / len(p), tp / len(g)
-    return 2 * precision * recall / (precision + recall)
-
-
-def score_answers(
-    predictions: dict[str, str],
-    gold: dict,
-    retrieved: dict[str, list[str]] | None = None,
-) -> dict[str, float]:
-    """`gold` maps qid -> {"answers": [str, ...], "evidence": [str, ...]}.
-
-    A qid present in `gold` but absent from `predictions` scores 0 -- an
-    unanswered question is a failure, not an exemption.
-    """
-    if not gold:
-        return {"answer_f1": 0.0, "evidence_f1": 0.0}
-
-    answer_scores, evidence_scores = [], []
-    for qid, g in gold.items():
-        pred = predictions.get(qid, "")
-        answer_scores.append(max(token_f1_score(pred, ref) for ref in g["answers"]))
-        if retrieved is not None:
-            evidence_scores.append(_set_f1(retrieved.get(qid, []), g["evidence"]))
-
+def _rowwise(paper: dict) -> dict:
+    """HuggingFace gives `qas` as a dict-of-lists; upstream wants a list-of-dicts."""
+    qas = paper["qas"]
     return {
-        "answer_f1": sum(answer_scores) / len(answer_scores),
-        "evidence_f1": (sum(evidence_scores) / len(evidence_scores)) if evidence_scores else 0.0,
+        "qas": [
+            {"question_id": qid, "question": q, "answers": ann["answer"]}
+            for qid, q, ann in zip(qas["question_id"], qas["question"], qas["answers"])
+        ]
     }
+
+
+def build_gold(papers: list[dict], text_evidence_only: bool = True) -> dict:
+    """qid -> [{answer, evidence, type}, ...], one entry per annotator.
+
+    `text_evidence_only=True` drops "FLOAT SELECTED" (figure/table) evidence,
+    which a text-only retriever cannot reach. That is upstream's own flag, and
+    it is what makes the Recall@k ceiling honest rather than punitive.
+    """
+    return get_answers_and_evidence({p["id"]: _rowwise(p) for p in papers}, text_evidence_only)
+
+
+def score_answers(predictions: dict[str, dict], gold: dict) -> dict:
+    """`predictions` maps qid -> {"answer": str, "evidence": [str, ...]}.
+
+    Returns upstream's dict: "Answer F1", "Answer F1 by type", "Evidence F1",
+    "Missing predictions". A qid in `gold` but absent from `predictions` scores
+    0 on both metrics -- upstream counts it, it is not an exemption.
+    """
+    return evaluate(gold, predictions)
 ```
 
 Re-run: `python -m pytest tests/eval/test_answer.py -v`
@@ -1624,7 +1714,15 @@ Upstream: allenai/qasper-led-baseline @ <SHA>. Not reimplemented."
 
 **Interfaces:**
 - Consumes: everything above.
-- Produces: `Config(name:str, sparse:bool, dense:bool, rerank:bool, hyde:bool)`; `evaluate_config(cfg, corpus, retrievers, ks) -> dict[str,float]`; `to_markdown(rows: list[dict]) -> str`.
+- Produces: `Config(name:str, sparse:bool, dense:bool, rerank:bool, hyde:bool)`; `ABLATION_LADDER: list[Config]`; `to_markdown(rows: list[dict]) -> str`.
+
+> An earlier draft of this line also promised `evaluate_config(cfg, corpus, retrievers, ks)`. There is
+> no such function and there should not be: `scripts/run_m1.py` (Task 14) owns the evaluation loop, and
+> a second entry point that nothing calls is dead weight. YAGNI.
+
+`to_markdown` derives its columns from `rows[0]`. If a later row is missing one of those keys it must
+raise `ValueError` naming the key — a `KeyError` from deep inside a format string, after a 40-minute
+retrieval run, is a bad way to learn that two rows disagreed.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -1903,35 +2001,25 @@ def test_unanswerable_question_yields_empty_answer_string():
 Run: `python -m pytest tests/corpus/test_qasper.py::test_gold_answers_shape_matches_score_answers_contract -v`
 Expected: FAIL — `AttributeError: 'QasperCorpus' object has no attribute 'gold_answers'`
 
-- [ ] **Step 3: Implement (append the method to `QasperCorpus`)**
+- [ ] **Step 3: Expose the raw papers; let upstream build the gold**
+
+Do **not** hand-build a gold dict. `eval/answer.py::build_gold` (Task 12) delegates to upstream's
+`get_answers_and_evidence()`, which already knows the per-annotator shape, the `"Unanswerable"`
+sentinel, the extractive/abstractive/boolean priority, and the `text_evidence_only` filter.
+
+`QasperCorpus` only needs to hand over its raw rows:
 
 ```python
-    def gold_answers(self) -> dict[str, dict]:
-        """qid -> {"answers": [str, ...], "evidence": [str, ...]}.
+    def raw_papers(self) -> list[dict]:
+        """The untouched HuggingFace rows, for vendor/qasper_eval.py to consume.
 
-        QASPER answers are a union of free-form text, extractive spans, and
-        yes/no. We flatten each annotator's answer to one string; an
-        unanswerable question's reference is the empty string, so a system that
-        answers anything at all is penalised.
+        Deliberately not reshaped: `build_gold` owns the translation, and the
+        scoring protocol lives upstream where it cannot drift from the paper.
         """
-        out: dict[str, dict] = {}
-        for paper in self._papers:
-            qas = paper["qas"]
-            for qid, ann in zip(qas["question_id"], qas["answers"]):
-                answers, evidence = [], []
-                for a in ann["answer"]:
-                    if a["unanswerable"]:
-                        answers.append("")
-                    elif a["yes_no"] is not None:
-                        answers.append("yes" if a["yes_no"] else "no")
-                    elif a["free_form_answer"]:
-                        answers.append(a["free_form_answer"])
-                    else:
-                        answers.append(" ".join(a["extractive_spans"]))
-                    evidence.extend(a["evidence"])
-                out[qid] = {"answers": answers, "evidence": evidence}
-        return out
+        return self._papers
 ```
+
+Test: `QasperCorpus.from_raw([RAW_PAPER]).raw_papers() == [RAW_PAPER]` (identity, not a copy).
 
 - [ ] **Step 4: Run the tests to verify they pass**
 
@@ -1951,7 +2039,7 @@ import argparse, pathlib
 
 from amrag.corpus.qasper import QasperCorpus
 from amrag.eval.ablate import to_markdown
-from amrag.eval.answer import score_answers
+from amrag.eval.answer import build_gold, score_answers
 from amrag.generate.llm import DeepSeekLLM
 from amrag.generate.prompt import INSUFFICIENT_EVIDENCE, build_grounded_prompt
 from amrag.index.text import BGEM3Encoder, BM25Retriever, DenseRetriever
@@ -1966,7 +2054,7 @@ a = ap.parse_args()
 corpus = QasperCorpus.load("test")
 docs = list(corpus.documents())
 texts = {d.doc_id: d.text for d in docs}
-gold = corpus.gold_answers()
+gold = build_gold(corpus.raw_papers(), text_evidence_only=True)
 queries = list(corpus.queries())
 if a.limit:
     queries = queries[: a.limit]
@@ -1976,28 +2064,33 @@ dense = DenseRetriever.build(docs, BGEM3Encoder())
 sparse = BM25Retriever.build(docs)
 reranker, llm = BGEReranker(), DeepSeekLLM()
 
-predictions, retrieved, abstentions = {}, {}, 0
+predictions, abstentions = {}, 0
 for q in queries:
     hits = rrf_fuse([dense.retrieve(q.text, 100), sparse.retrieve(q.text, 100)], k=100)
     hits = rerank(q.text, hits[:50], texts, reranker, k=a.k)
-    retrieved[q.qid] = [texts[h.doc_id] for h in hits]
     answer = llm.complete(build_grounded_prompt(q.text, hits, texts)).strip()
     if answer == INSUFFICIENT_EVIDENCE:
         abstentions += 1
-        answer = ""          # scored as empty, exactly like an unanswerable gold
-    predictions[q.qid] = answer
+        # Upstream's gold answer for an unanswerable question is the literal
+        # string "Unanswerable". Emitting "" here would score Answer-F1 = 0 for
+        # a CORRECT abstention -- token_f1_score has no empty-empty special case
+        # (unlike paragraph_f1_score). Say what the benchmark expects.
+        answer = "Unanswerable"
+    predictions[q.qid] = {"answer": answer, "evidence": [texts[h.doc_id] for h in hits]}
 
-s = score_answers(predictions, gold, retrieved=retrieved)
+s = score_answers(predictions, gold)
 rows = [{
     "config": "+rerank",
-    "evidence_f1": s["evidence_f1"],      # retrieval first (deck slide 39)
-    "answer_f1": s["answer_f1"],
+    "evidence_f1": s["Evidence F1"],      # retrieval first (deck slide 39)
+    "answer_f1": s["Answer F1"],
+    "missing_predictions": s["Missing predictions"],
     "abstention_rate": abstentions / len(queries),
 }]
 md = to_markdown(rows)
 pathlib.Path("results").mkdir(exist_ok=True)
 pathlib.Path("results/m1_qasper_answers.md").write_text(md)
 print(md)
+print("\nAnswer F1 by type:", s["Answer F1 by type"])   # extractive/abstractive/boolean/none
 ```
 
 - [ ] **Step 6: Smoke-run on 20 questions, then the full split**
