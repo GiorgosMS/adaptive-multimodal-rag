@@ -1,7 +1,5 @@
 # M1: Text RAG Foundation — Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
-
 **Goal:** Build and evaluate the Pharos deck's text RAG pipeline (naïve → +hybrid/RRF → +rerank → +HyDE) on QASPER and LitSearch, producing an ablation table that isolates each stage's contribution.
 
 **Architecture:** A `Retriever` protocol returning a uniform `Hit` type lets sparse, dense, fused, and reranked retrievers compose and be swapped without any consumer knowing which is which. Evaluation is decomposed — retrieval metrics are computed and gated *before* any answer is generated (deck slide 39). Official metrics are **vendored, never reimplemented**.
@@ -10,7 +8,7 @@
 
 ## Global Constraints
 
-Copied verbatim from `docs/superpowers/specs/2026-07-10-multimodal-rag-design.md`:
+Copied verbatim from `docs/specs/2026-07-10-multimodal-rag-design.md`:
 
 - **Never reimplement an official metric.** Vendor the upstream evaluator. Reimplemented metrics produce numbers that are not comparable to published results.
 - **One fixed judge across every run:** `deepseek-v4-flash`. Report deltas between our configurations; **never** compare absolute scores against published GPT-4o numbers.
